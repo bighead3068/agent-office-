@@ -1,0 +1,14 @@
+node_modules
+dist
+.DS_Store
+*.local
+.vite
+.env
+.env.*
+*.pem
+*.key
+*.log
+npm-debug.log*
+.agent-office-runtime/
+__pycache__/
+*.pyc
