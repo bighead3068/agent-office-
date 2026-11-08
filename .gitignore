@@ -9,3 +9,6 @@ dist
 *.key
 *.log
 npm-debug.log*
+.agent-office-runtime/
+__pycache__/
+*.pyc

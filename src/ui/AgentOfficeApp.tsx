@@ -21,6 +21,16 @@ import {
 import { reducer, selectAgent, type AgentSnapshot, type OfficeState } from "../core/agent-core";
 import { OfficeScene } from "../office";
 import "../office/OfficeScene.css";
+import {
+  FIXTURE_BANNER,
+  REAL_BANNER,
+  FIXTURE_REPORT_URL,
+  SELF_REPORT_URL,
+  projectSelfReport,
+  requestedPartition,
+  type RealViewModel,
+  type SelfReportPayload,
+} from "../adapters/selfReport";
 
 const STATUS_ZH = {
   working: "工作中",
@@ -69,13 +79,20 @@ const taipei = new Intl.DateTimeFormat("zh-TW", {
 export function AgentOfficeApp() {
   const boot = useRef({ now: Date.now(), nonce: 1 });
   const [now, setNow] = useState(boot.current.now);
-  const [office, setOffice] = useState<OfficeState>(() => createScenario("opening", boot.current.now));
+  const [office, setOffice] = useState<OfficeState>(() => {
+    const demo = createScenario("opening", boot.current.now);
+    const search = typeof window === "undefined" ? "" : window.location.search;
+    const openReport = requestedPartition(search) === "fixture" || new URLSearchParams(search).get("view") === "real";
+    return openReport ? activateMode(demo, "real", boot.current.now, boot.current.nonce) : demo;
+  });
   const [scenario, setScenario] = useState<ScenarioId>("opening");
   const [selectedId, setSelectedId] = useState("lin");
   const [notice, setNotice] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [scriptNote, setScriptNote] = useState<string | null>(null);
   const [reducedMotion, setReducedMotion] = useState(false);
+  const [live, setLive] = useState<RealViewModel | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
   const nonce = useRef(10);
   const indexRef = useRef(0);
   const dueRef = useRef(0);
@@ -120,6 +137,35 @@ export function AgentOfficeApp() {
   const summary = coreSummary(office);
   const agents = sceneAgents(office);
   const demoMode = office.activeMode === "demo";
+  const livePartition = requestedPartition(typeof window === "undefined" ? "" : window.location.search);
+
+  useEffect(() => {
+    if (demoMode) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const response = await fetch(livePartition === "fixture" ? FIXTURE_REPORT_URL : SELF_REPORT_URL, { cache: "no-store" });
+        if (!response.ok) throw new Error(String(response.status));
+        const view = projectSelfReport((await response.json()) as SelfReportPayload, livePartition);
+        if (!view) throw new Error("invalid");
+        if (!cancelled) {
+          setLive(view);
+          setLiveError(null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setLive(null);
+          setLiveError(error instanceof Error ? error.message : "error");
+        }
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [demoMode, livePartition]);
 
   function resetScenario(next: ScenarioId = scenario) {
     setRunning(false);
@@ -193,20 +239,22 @@ export function AgentOfficeApp() {
           <p className="lede">
             {demoMode
               ? "四位示範代理人坐在固定座位。點一個人，就能看到手上的事，以及你現在還掌握得住什麼。"
-              : "真實來源尚未連接。這裡沒有代理人，也沒有事件。"}
+              : livePartition === "fixture"
+                ? "這是本機夾具，不是父層 Bot 的回報，也不能當成已經看見真實機器人。"
+                : "這一頁只讀本機自報。還沒收到回報、或超過保存時間，就是未知，不是閒置。"}
           </p>
         </div>
-        <p className={demoMode ? "banner" : "banner banner-real"} role="status" data-testid="mode-banner">
-          {demoMode ? "模擬資料・未連接真實 Agent" : "真實資料・未連接"}
+        <p className={demoMode ? "banner" : "banner banner-real"} role="status" data-testid="mode-banner" data-partition={demoMode ? "demo" : live?.partition ?? livePartition}>
+          {demoMode ? "模擬資料・未連接真實 Agent" : live?.banner ?? (livePartition === "fixture" ? FIXTURE_BANNER : REAL_BANNER)}
         </p>
       </header>
       <div className="tabs" role="tablist" aria-label="資料模式">
         <button type="button" className="tab" role="tab" aria-selected={demoMode} data-testid="tab-demo" onClick={() => switchMode("demo")}>示範辦公室</button>
-        <button type="button" className="tab" role="tab" aria-selected={!demoMode} data-testid="tab-live" onClick={() => switchMode("real")}>真實資料（未連接）</button>
+        <button type="button" className="tab" role="tab" aria-selected={!demoMode} data-testid="tab-live" onClick={() => switchMode("real")}>Bot自行回報</button>
       </div>
-      {demoMode ? null : (
-        <p className="live-callout" data-testid="live-empty">尚未連接。沒有可顯示的人，也沒有事件。</p>
-      )}
+      {!demoMode && !live ? (
+        <p className="live-callout" data-testid="live-empty" data-error={liveError ?? ""}>還沒有讀到本機回報。這不是閒置，也不是父層 Bot 已經回報的證明。</p>
+      ) : null}
       <div className="shell">
         <section onKeyDown={onKeys}>
           {demoMode ? (
@@ -220,21 +268,31 @@ export function AgentOfficeApp() {
                 reducedMotion={reducedMotion}
               />
             </div>
+          ) : live ? (
+            <div className="floor-slot">
+              <OfficeScene
+                className="floor"
+                agents={[live.agent]}
+                selectedId={live.agent.id}
+                config={SCENE_EGG}
+                reducedMotion={reducedMotion}
+              />
+            </div>
           ) : (
             <div className="live-floor" data-testid="live-floor">
-              <p>沒有座位上的人</p>
-              <p>連上真實來源之前，這裡保持空白。</p>
+              <p>沒有讀到回報</p>
+              <p>示範座位不會出現在這裡。</p>
             </div>
           )}
           <p className="caption">
             {demoMode
               ? "方向鍵或數字鍵 1 到 4 可以換人。打盹只在明確閒置、而且資料還新鮮時出現。"
-              : "這個畫面不顯示示範座位。"}
+              : "沒有心跳，也不把逾時或漏報推成閒置。"}
           </p>
         </section>
         <aside className="side">
-          <SummaryPanel summary={summary} onSelect={demoMode ? setSelectedId : undefined} />
-          <DetailPanel state={office} agentId={selectedId} />
+          {demoMode ? <SummaryPanel summary={summary} onSelect={setSelectedId} /> : live ? <RealSummary model={live} /> : <SummaryPanel summary={summary} />}
+          {demoMode ? <DetailPanel state={office} agentId={selectedId} /> : live ? <RealDetail model={live} /> : <DetailPanel state={office} agentId={selectedId} />}
         </aside>
       </div>
       {demoMode ? <section className="sim" aria-label="模擬操作" data-testid="sim-panel">
@@ -266,7 +324,7 @@ export function AgentOfficeApp() {
         {notice ? <p className="notice" role="status" data-testid="sim-notice">{notice}</p> : null}
       </section> : null}
       <footer className="foot">
-        <p>{demoMode ? "完成或失敗都不會自己變成閒置。" : "尚未連接真實資料。"}</p>
+        <p>{demoMode ? "完成或失敗都不會自己變成閒置。" : "自報逾時就是未知。這一頁不會自己補心跳，也不會把人改成閒置。"}</p>
         {demoMode ? (
           <details>
             <summary>來源與時間設定</summary>
@@ -351,6 +409,56 @@ function NameList({
         ))}
       </ul>
     </div>
+  );
+}
+
+function RealSummary({ model }: { model: RealViewModel }) {
+  const rows = [
+    ["工作中", model.counts.working],
+    ["等待中", model.counts.waiting],
+    ["受阻", model.counts.blocked],
+    ["失敗", model.counts.failed],
+    ["已完成", model.counts.completed],
+    ["明確閒置", model.counts.idle],
+    ["未知", model.counts.unknown],
+  ] as const;
+  return (
+    <section className="panel" data-testid="summary-panel" aria-label="監督總覽">
+      <h2>監督總覽 <span className="stamp">唯讀</span></h2>
+      <p className="hint">共 1 人。沒有派工，沒有閒置推論。</p>
+      <dl className="counts">
+        {rows.map(([label, value]) => (
+          <div key={label}><dt>{label}</dt><dd>{value}</dd></div>
+        ))}
+      </dl>
+      <p data-testid="unknown-breakdown">未知的組成：資料過期 {model.stale}，連線中斷 {model.disconnected}。</p>
+    </section>
+  );
+}
+
+function RealDetail({ model }: { model: RealViewModel }) {
+  return (
+    <section className="panel" data-testid="detail-panel" aria-label="席位詳情">
+      <h2>席位詳情</h2>
+      <p className="detail-status" data-testid="detail-status">{model.agent.name}・{model.effectiveLabel}</p>
+      <p className="hint">{model.agent.role}</p>
+      <dl className="facts">
+        <dt>身分</dt>
+        <dd>{model.identity}</dd>
+        <dt>手上的事</dt>
+        <dd>{model.jobText}（最後已知 {model.lastKnownLabel}）</dd>
+        <dt>呼叫端標籤</dt>
+        <dd>{model.callerLabel ? `${model.callerLabel}（非身分）` : "沒有"}</dd>
+        <dt>新鮮度</dt>
+        <dd>{model.agent.freshness === "stale" ? "已過期，目前未知" : model.reason === "missing_report" ? "尚未收到回報" : "新鮮"}</dd>
+        <dt>閒置小動畫</dt>
+        <dd>{model.egg}</dd>
+      </dl>
+      <details className="dev-note" open>
+        <summary>來源細節</summary>
+        <p>{model.provenanceText}</p>
+      </details>
+    </section>
   );
 }
 

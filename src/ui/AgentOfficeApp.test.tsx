@@ -1,12 +1,17 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentOfficeApp } from "./AgentOfficeApp";
 
 const DEMO_NAMES = ["林知夏", "陳墨白", "高小滿", "方寧遠"];
 
 describe("真實資料畫面", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("切到真實模式後，畫面上不再有示範人名、情境或事件回饋", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("no receiver")));
     const user = userEvent.setup();
     render(<AgentOfficeApp />);
 
@@ -20,7 +25,9 @@ describe("真實資料畫面", () => {
 
     expect(screen.getByTestId("tab-live").getAttribute("aria-selected")).toBe("true");
     expect(screen.getByTestId("tab-demo").getAttribute("aria-selected")).toBe("false");
-    expect(screen.getByTestId("mode-banner").textContent).toBe("真實資料・未連接");
+    expect(await screen.findByTestId("live-empty")).toBeTruthy();
+    expect(screen.getByTestId("mode-banner").textContent).toBe("Bot自行回報・非平台原生");
+    expect(screen.getByTestId("live-empty").textContent ?? "").toContain("不是閒置");
     expect(screen.queryByTestId("sim-panel")).toBeNull();
     expect(screen.queryByTestId("sim-notice")).toBeNull();
     expect(document.querySelectorAll("[data-agent-id]")).toHaveLength(0);
