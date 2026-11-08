@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Local self-report receiver for Agent Office.
+"""Local multi-source self-report receiver.
 
-Python 3.10 stdlib only. Default bind is 127.0.0.1. This is a local-network
-tool, not an internet service. The write token is generated at startup and
-stored only in the runtime directory, which must sit outside the source tree.
-The token is never printed. GET is same-origin and unauthenticated so the
-browser does not embed the write token. No CORS credential headers are sent.
+Python 3.10 stdlib only. Default bind is 127.0.0.1:8793 and the runtime
+directory is agent-office-multi-report. It refuses port 8792 and the older
+agent-office-self-report directory so an upgrade cannot replace the running
+single-agent receiver.
 
-The real token is bound to one source and agent id. A caller-supplied label
-is not identity. Fixture credentials use a different token and partition.
+Each trusted source gets its own header file. The token is never printed.
+A request cannot choose a different source than the token. GET is same-origin,
+unauthenticated, and sends no credential CORS. Freshness is calculated when
+the snapshot is read. Nothing writes a fake heartbeat, idle, or timer status.
 """
 
 from __future__ import annotations
@@ -25,27 +26,42 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
 
-REAL_ID = "5be5c071-b5bd-4ed5-ba91-5c474954d171"
+EVIDENCE_TYPE = "bot-self-report"
+LEGACY_PORT = 8792
+LEGACY_RUNTIME_NAME = "agent-office-self-report"
+RUNTIME_NAME = "agent-office-multi-report"
 FIXTURE_SOURCE = "fixture-local"
 FIXTURE_AGENT = "fixture-agent"
-MAX_BODY = 2048
+FIXTURE_NAME = "夾具代理人"
+MAX_BODY = 4096
+MAX_TITLE = 160
 MAX_SEEN = 500
 MAX_RECENT = 200
 FUTURE_SKEW_MS = 60_000
+DEFAULT_TTL_MS = 300_000
+STATE_VERSION = 2
 ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
 LABEL_RE = re.compile(r"^[A-Za-z0-9\u4e00-\u9fff ._-]{1,32}$")
-ALLOWED_FIELDS = {"eventId", "type", "jobId", "at", "sourceId", "agentId", "label"}
-ALLOWED_TYPES = {"task.started", "task.completed", "task.failed"}
-STATE_VERSION = 1
+TITLE_BAD = re.compile(r"[\x00-\x1f\x7f]")
+TRUSTED = (
+    {"agentId": "5be5c071-b5bd-4ed5-ba91-5c474954d171", "name": "專案／產品助手（協調）"},
+    {"agentId": "7a961a88-8d6c-4afe-ada6-e28542084d0c", "name": "Agent Office 開發助手"},
+    {"agentId": "892250dc-215a-4817-b9ae-64e538a22fe3", "name": "Agent Office 互動設計"},
+    {"agentId": "cf8d7f4a-569c-48f8-86e0-a2d8b543c4e1", "name": "Agent Office 測試與授權"},
+)
+TRUSTED_IDS = tuple(item["agentId"] for item in TRUSTED)
+COORDINATOR_ID = TRUSTED_IDS[0]
+ALLOWED_FIELDS = {"eventId", "type", "jobId", "at", "sourceId", "agentId", "label", "taskTitle"}
+ALLOWED_TYPES = {"task.started", "task.completed", "task.failed", "task.progress"}
 
 
 def default_runtime_dir() -> Path:
     if os.name == "nt":
         root = os.environ.get("LOCALAPPDATA") or str(Path.home())
-        return Path(root) / "agent-office-self-report"
+        return Path(root) / RUNTIME_NAME
     data = os.environ.get("XDG_DATA_HOME")
     base = Path(data) if data else Path.home() / ".local" / "share"
-    return base / "agent-office-self-report"
+    return base / RUNTIME_NAME
 
 
 def restrict(path: Path) -> None:
@@ -77,26 +93,41 @@ def write_private(path: Path, text: str) -> None:
     restrict(path)
 
 
-def empty_state(partition: str, source_id: str, agent_id: str) -> dict:
+def header_file(runtime: Path, agent_id: str) -> Path:
+    if not ID_RE.fullmatch(agent_id):
+        raise ValueError("bad agent id")
+    directory = (runtime / "headers").resolve()
+    path = (directory / f"{agent_id}.header").resolve()
+    if path.parent != directory:
+        raise ValueError("bad header path")
+    return path
+
+
+def issue_header(runtime: Path, agent_id: str) -> str:
+    token = secrets.token_urlsafe(32)
+    write_private(header_file(runtime, agent_id), f"Authorization: Bearer {token}\n")
+    return token
+
+
+def empty_state(partition: str, roster: tuple[dict, ...]) -> dict:
     return {
         "version": STATE_VERSION,
         "partition": partition,
-        "sourceId": source_id,
-        "agentId": agent_id,
         "seen": [],
         "events": [],
-        "job": None,
+        "agents": {item["agentId"]: None for item in roster},
     }
 
 
-def load_state(path: Path, partition: str, source_id: str, agent_id: str) -> dict:
+def load_state(path: Path, partition: str, roster: tuple[dict, ...]) -> dict:
     if not path.exists():
-        return empty_state(partition, source_id, agent_id)
+        return empty_state(partition, roster)
     raw = json.loads(path.read_text(encoding="utf-8"))
+    expected = [item["agentId"] for item in roster]
     if raw.get("version") != STATE_VERSION or raw.get("partition") != partition:
         raise SystemExit(f"refusing to load mismatched state file: {path}")
-    if raw.get("sourceId") != source_id or raw.get("agentId") != agent_id:
-        raise SystemExit(f"refusing to load state bound to a different identity: {path}")
+    if list(raw.get("agents", {})) != expected:
+        raise SystemExit(f"refusing to load a state file for a different roster: {path}")
     return raw
 
 
@@ -104,18 +135,20 @@ def save_state(path: Path, state: dict) -> None:
     write_private(path, json.dumps(state, ensure_ascii=False, separators=(",", ":")))
 
 
-def issue_token(directory: Path, stem: str) -> str:
-    token = secrets.token_urlsafe(32)
-    write_private(directory / stem, token + "\n")
-    write_private(directory / f"{stem}-auth.header", f"Authorization: Bearer {token}\n")
-    return token
+def _title(value: object, required: bool) -> tuple[Optional[str], Optional[str]]:
+    if value is None:
+        if required:
+            return None, "malformed"
+        return None, None
+    if not isinstance(value, str) or TITLE_BAD.search(value) or not (1 <= len(value) <= MAX_TITLE):
+        return None, "malformed"
+    return value, None
 
 
-def parse_event(body: dict, binding: dict) -> dict:
+def parse_event(body: dict, bound_id: str) -> dict:
     if not isinstance(body, dict):
         return {"ok": False, "error": "malformed"}
-    extra = set(body) - ALLOWED_FIELDS
-    if extra:
+    if set(body) - ALLOWED_FIELDS:
         return {"ok": False, "error": "unexpected_field"}
     for key in ("eventId", "type", "jobId", "at", "sourceId", "agentId"):
         if key not in body:
@@ -128,12 +161,14 @@ def parse_event(body: dict, binding: dict) -> dict:
         return {"ok": False, "error": "malformed"}
     if type(body["at"]) is not int:
         return {"ok": False, "error": "malformed"}
-    if body["sourceId"] != binding["sourceId"] or body["agentId"] != binding["agentId"]:
+    if body["sourceId"] != bound_id or body["agentId"] != bound_id:
         return {"ok": False, "error": "identity_mismatch"}
     label = body.get("label")
-    if label is not None:
-        if not isinstance(label, str) or not LABEL_RE.fullmatch(label):
-            return {"ok": False, "error": "malformed"}
+    if label is not None and (not isinstance(label, str) or not LABEL_RE.fullmatch(label)):
+        return {"ok": False, "error": "malformed"}
+    title, title_error = _title(body.get("taskTitle"), required=body["type"] == "task.started")
+    if title_error:
+        return {"ok": False, "error": title_error}
     return {
         "ok": True,
         "event": {
@@ -141,9 +176,10 @@ def parse_event(body: dict, binding: dict) -> dict:
             "type": body["type"],
             "jobId": body["jobId"],
             "at": body["at"],
-            "sourceId": binding["sourceId"],
-            "agentId": binding["agentId"],
+            "sourceId": bound_id,
+            "agentId": bound_id,
             "label": label,
+            "taskTitle": title,
         },
     }
 
@@ -151,37 +187,52 @@ def parse_event(body: dict, binding: dict) -> dict:
 def apply_event(state: dict, event: dict, server_now: int) -> dict:
     if event["eventId"] in state["seen"]:
         return {"ok": True, "deduped": True}
+    if event["agentId"] not in state["agents"]:
+        return {"ok": False, "error": "identity_mismatch"}
     if event["at"] > server_now + FUTURE_SKEW_MS:
         return {"ok": False, "error": "malformed"}
-    job = state["job"]
+    job = state["agents"][event["agentId"]]
     if job is not None and event["at"] <= job["lastEventAt"]:
         return {"ok": False, "error": "out_of_order"}
     phase = None if job is None else job["phase"]
-    if event["type"] == "task.started":
+    kind = event["type"]
+    if kind == "task.started":
         if phase == "working":
             return {"ok": False, "error": "out_of_order"}
         if job is not None and job["jobId"] == event["jobId"] and phase in {"completed", "failed"}:
             return {"ok": False, "error": "out_of_order"}
-        state["job"] = {
+        state["agents"][event["agentId"]] = {
             "jobId": event["jobId"],
             "phase": "working",
+            "taskTitle": event["taskTitle"],
             "startedAt": event["at"],
             "terminalAt": None,
             "lastReportAt": server_now,
             "lastEventAt": event["at"],
             "lastEventId": event["eventId"],
-            "lastType": event["type"],
+            "lastType": kind,
             "callerLabel": event["label"],
         }
+    elif kind == "task.progress":
+        if job is None or phase != "working" or job["jobId"] != event["jobId"]:
+            return {"ok": False, "error": "out_of_order"}
+        if event["taskTitle"]:
+            job["taskTitle"] = event["taskTitle"]
+        job["lastReportAt"] = server_now
+        job["lastEventAt"] = event["at"]
+        job["lastEventId"] = event["eventId"]
+        job["lastType"] = kind
     else:
         if job is None or phase != "working" or job["jobId"] != event["jobId"]:
             return {"ok": False, "error": "out_of_order"}
-        job["phase"] = "completed" if event["type"] == "task.completed" else "failed"
+        job["phase"] = "completed" if kind == "task.completed" else "failed"
         job["terminalAt"] = event["at"]
         job["lastReportAt"] = server_now
         job["lastEventAt"] = event["at"]
         job["lastEventId"] = event["eventId"]
-        job["lastType"] = event["type"]
+        job["lastType"] = kind
+        if event["taskTitle"]:
+            job["taskTitle"] = event["taskTitle"]
         if event["label"] is not None:
             job["callerLabel"] = event["label"]
     state["seen"].append(event["eventId"])
@@ -189,28 +240,30 @@ def apply_event(state: dict, event: dict, server_now: int) -> dict:
     state["events"].append(
         {
             "eventId": event["eventId"],
-            "type": event["type"],
+            "type": kind,
             "jobId": event["jobId"],
             "at": event["at"],
             "acceptedAt": server_now,
             "sourceId": event["sourceId"],
             "agentId": event["agentId"],
+            "taskTitle": event["taskTitle"],
+            "evidenceType": EVIDENCE_TYPE,
         }
     )
     del state["events"][:-MAX_RECENT]
     return {"ok": True, "deduped": False}
 
 
-def project(state: dict, now: int, ttl_ms: int) -> dict:
-    job = state["job"]
+def project_agent(state: dict, agent_id: str, name: str, now: int, ttl_ms: int) -> dict:
+    job = state["agents"].get(agent_id)
     base = {
-        "partition": state["partition"],
-        "sourceId": state["sourceId"],
-        "agentId": state["agentId"],
-        "ttlMs": ttl_ms,
-        "serverNow": now,
-        "recent": list(state["events"][-20:]),
+        "agentId": agent_id,
+        "sourceId": agent_id if state["partition"] == "real" else FIXTURE_SOURCE if agent_id == FIXTURE_AGENT else agent_id,
+        "name": name,
+        "evidenceType": EVIDENCE_TYPE if state["partition"] == "real" else "fixture",
     }
+    if state["partition"] == "fixture":
+        base["sourceId"] = FIXTURE_SOURCE
     if job is None:
         base.update(
             {
@@ -219,6 +272,7 @@ def project(state: dict, now: int, ttl_ms: int) -> dict:
                 "freshness": "none",
                 "reason": "missing_report",
                 "jobId": None,
+                "taskTitle": None,
                 "startedAt": None,
                 "terminalAt": None,
                 "lastReportAt": None,
@@ -228,13 +282,6 @@ def project(state: dict, now: int, ttl_ms: int) -> dict:
         )
         return base
     stale = now - job["lastReportAt"] > ttl_ms
-    provenance = {
-        "sourceId": state["sourceId"],
-        "agentId": state["agentId"],
-        "eventId": job["lastEventId"],
-        "type": job["lastType"],
-        "at": job["lastEventAt"],
-    }
     base.update(
         {
             "effectiveStatus": "unknown" if stale else job["phase"],
@@ -242,14 +289,49 @@ def project(state: dict, now: int, ttl_ms: int) -> dict:
             "freshness": "stale" if stale else "fresh",
             "reason": "ttl" if stale else "report",
             "jobId": job["jobId"],
+            "taskTitle": job["taskTitle"],
             "startedAt": job["startedAt"],
             "terminalAt": job["terminalAt"],
             "lastReportAt": job["lastReportAt"],
             "callerLabel": job["callerLabel"],
-            "provenance": provenance,
+            "provenance": {
+                "sourceId": base["sourceId"],
+                "agentId": agent_id,
+                "eventId": job["lastEventId"],
+                "type": job["lastType"],
+                "at": job["lastEventAt"],
+                "evidenceType": base["evidenceType"],
+            },
         }
     )
     return base
+
+
+def project(state: dict, roster: tuple[dict, ...], now: int, ttl_ms: int) -> dict:
+    agents = [project_agent(state, item["agentId"], item["name"], now, ttl_ms) for item in roster]
+    primary = dict(agents[0])
+    recent = [dict(item) for item in state["events"][-20:]]
+    return {
+        "partition": state["partition"],
+        "evidenceType": EVIDENCE_TYPE if state["partition"] == "real" else "fixture",
+        "ttlMs": ttl_ms,
+        "serverNow": now,
+        "agents": agents,
+        "recent": recent,
+        "sourceId": primary["sourceId"],
+        "agentId": primary["agentId"],
+        "effectiveStatus": primary["effectiveStatus"],
+        "lastKnownStatus": primary["lastKnownStatus"],
+        "freshness": primary["freshness"],
+        "reason": primary["reason"],
+        "jobId": primary["jobId"],
+        "taskTitle": primary["taskTitle"],
+        "startedAt": primary["startedAt"],
+        "terminalAt": primary["terminalAt"],
+        "lastReportAt": primary["lastReportAt"],
+        "callerLabel": primary["callerLabel"],
+        "provenance": primary["provenance"],
+    }
 
 
 class App:
@@ -260,51 +342,53 @@ class App:
         self.lock = threading.Lock()
         runtime.mkdir(parents=True, exist_ok=True)
         restrict(runtime)
-        self.real_token = issue_token(runtime, "token")
+        self.roster = TRUSTED
+        self.tokens = {item["agentId"]: issue_header(runtime, item["agentId"]) for item in TRUSTED}
         self.real_state_path = runtime / "state.json"
-        self.real_state = load_state(self.real_state_path, "real", REAL_ID, REAL_ID)
+        self.real_state = load_state(self.real_state_path, "real", TRUSTED)
         self.fixture_token = None
         self.fixture_state = None
         self.fixture_state_path = None
+        self.fixture_roster = ({"agentId": FIXTURE_AGENT, "name": FIXTURE_NAME},)
         if enable_fixtures:
-            self.fixture_token = issue_token(runtime, "fixture")
+            self.fixture_token = issue_header(runtime, FIXTURE_AGENT)
             self.fixture_state_path = runtime / "fixture-state.json"
-            self.fixture_state = load_state(self.fixture_state_path, "fixture", FIXTURE_SOURCE, FIXTURE_AGENT)
+            self.fixture_state = load_state(self.fixture_state_path, "fixture", self.fixture_roster)
 
-    def classify(self, token: str) -> Optional[str]:
-        if secrets.compare_digest(token, self.real_token):
-            return "real"
+    def classify(self, token: str) -> Optional[tuple[str, str]]:
+        for agent_id, saved in self.tokens.items():
+            if secrets.compare_digest(token, saved):
+                return ("real", agent_id)
         if self.fixture_token and secrets.compare_digest(token, self.fixture_token):
-            return "fixture"
+            return ("fixture", FIXTURE_AGENT)
         return None
-
-    def binding(self, partition: str) -> dict:
-        if partition == "real":
-            return {"partition": "real", "sourceId": REAL_ID, "agentId": REAL_ID}
-        return {"partition": "fixture", "sourceId": FIXTURE_SOURCE, "agentId": FIXTURE_AGENT}
 
     def snapshot(self, partition: str) -> dict:
         with self.lock:
-            state = self.real_state if partition == "real" else self.fixture_state
-            if state is None:
-                return {"ok": False, "error": "fixtures_disabled"}
-            return project(state, now_ms(), self.ttl_ms)
+            if partition == "fixture":
+                if self.fixture_state is None:
+                    return {"ok": False, "error": "fixtures_disabled"}
+                return project(self.fixture_state, self.fixture_roster, now_ms(), self.ttl_ms)
+            return project(self.real_state, self.roster, now_ms(), self.ttl_ms)
 
-    def accept(self, partition: str, token_partition: str, body: dict) -> tuple[int, dict]:
-        if token_partition != partition:
+    def accept(self, partition: str, kind: str, bound_id: str, body: dict) -> tuple[int, dict]:
+        if kind != partition:
             return 403, {"ok": False, "error": "wrong_partition"}
         if partition == "fixture" and self.fixture_state is None:
             return 404, {"ok": False, "error": "fixtures_disabled"}
-        parsed = parse_event(body, self.binding(partition))
+        parsed = parse_event(body, bound_id)
         if not parsed["ok"]:
             code = 403 if parsed["error"] == "identity_mismatch" else 400
             return code, parsed
         with self.lock:
             state = self.real_state if partition == "real" else self.fixture_state
+            before = json.dumps(state, ensure_ascii=False, sort_keys=True)
             result = apply_event(state, parsed["event"], now_ms())
             if result["ok"] and not result["deduped"]:
                 path = self.real_state_path if partition == "real" else self.fixture_state_path
                 save_state(path, state)
+            elif json.dumps(state, ensure_ascii=False, sort_keys=True) != before and not result["ok"]:
+                raise RuntimeError("rejected event mutated state")
         status = 200 if result["ok"] else 409 if result["error"] == "out_of_order" else 400
         return status, result
 
@@ -318,7 +402,7 @@ def make_handler(app: App):
         protocol_version = "HTTP/1.1"
 
         def log_message(self, fmt: str, *args) -> None:
-            sys.stderr.write("self-report %s\n" % (fmt % args))
+            sys.stderr.write("multi-report %s\n" % (fmt % args))
 
         def _send(self, status: int, payload: Optional[dict] = None, body: bytes = b"", content_type: str = "application/json; charset=utf-8") -> None:
             data = body if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -341,7 +425,7 @@ def make_handler(app: App):
         def do_GET(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
             if path == "/health":
-                self._send(200, {"ok": True, "service": "agent-office-self-report"})
+                self._send(200, {"ok": True, "service": RUNTIME_NAME, "evidenceType": EVIDENCE_TYPE})
                 return
             partition = self._partition(path)
             if partition:
@@ -362,9 +446,8 @@ def make_handler(app: App):
             if not header.startswith("Bearer ") or header == "Bearer ":
                 self._send(401, {"ok": False, "error": "unauthorized"})
                 return
-            token = header[7:].strip()
-            kind = app.classify(token)
-            if kind is None:
+            found = app.classify(header[7:].strip())
+            if found is None:
                 self._send(401, {"ok": False, "error": "unauthorized"})
                 return
             try:
@@ -381,7 +464,8 @@ def make_handler(app: App):
             except (UnicodeDecodeError, json.JSONDecodeError):
                 self._send(400, {"ok": False, "error": "malformed"})
                 return
-            status, payload = app.accept(partition, kind, body)
+            kind, bound_id = found
+            status, payload = app.accept(partition, kind, bound_id, body)
             self._send(status, payload)
 
         def do_OPTIONS(self) -> None:  # noqa: N802
@@ -422,37 +506,40 @@ def serve(app: App, host: str, port: int) -> ThreadingHTTPServer:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Agent Office local self-report receiver")
+    parser = argparse.ArgumentParser(description="Agent Office multi-source self-report receiver")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8792)
+    parser.add_argument("--port", type=int, default=8793)
     parser.add_argument("--runtime-dir", default="")
     parser.add_argument("--static-dir", default="")
-    parser.add_argument("--ttl-ms", type=int, default=45000)
+    parser.add_argument("--ttl-ms", type=int, default=DEFAULT_TTL_MS)
     parser.add_argument("--enable-fixtures", action="store_true")
     return parser
 
 
 def main(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
+    if args.port == LEGACY_PORT:
+        print("refusing port 8792; leave the existing receiver running and use 8793", file=sys.stderr)
+        return 2
     if args.ttl_ms <= 0:
         print("ttl-ms must be positive", file=sys.stderr)
         return 2
     runtime = Path(args.runtime_dir).expanduser() if args.runtime_dir else default_runtime_dir()
+    if runtime.name == LEGACY_RUNTIME_NAME:
+        print("refusing the existing agent-office-self-report runtime directory", file=sys.stderr)
+        return 2
     static_dir = Path(args.static_dir).expanduser() if args.static_dir else None
     if args.host not in {"127.0.0.1", "::1", "localhost"}:
-        print(
-            "warning: bind is not loopback. GET has no auth. This is still not an internet service. Do not open a firewall.",
-            file=sys.stderr,
-        )
+        print("warning: bind is not loopback. GET has no auth. Do not open a firewall.", file=sys.stderr)
     app = App(runtime, args.ttl_ms, args.enable_fixtures, static_dir)
     httpd = serve(app, args.host, args.port)
     bound_host, bound_port = httpd.server_address[:2]
     print(f"bind={bound_host}:{bound_port}")
     print(f"runtime_dir={runtime}")
-    print(f"auth_header={runtime / 'token-auth.header'}")
-    if args.enable_fixtures:
-        print(f"fixture_auth_header={runtime / 'fixture-auth.header'}")
-    print(f"static_dir={static_dir if static_dir else 'none'}")
+    print(f"header_dir={runtime / 'headers'}")
+    print("agents=" + ",".join(TRUSTED_IDS))
+    print(f"ttl_ms={args.ttl_ms}")
+    print(f"evidence={EVIDENCE_TYPE}")
     print("token_not_printed=yes")
     try:
         httpd.serve_forever()

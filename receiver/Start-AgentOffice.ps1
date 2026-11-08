@@ -1,3 +1,6 @@
+# Legacy 8792 launcher. The desktop copy already installed must keep running.
+# This repository's receiver now refuses port 8792 and agent-office-self-report.
+# Use Start-MultiReport.ps1 for the separate 8793 upgrade.
 param(
   [string]$BindHost = "127.0.0.1",
   [int]$Port = 8792,

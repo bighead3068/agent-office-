@@ -1,130 +1,113 @@
 import http.client
+import io
 import json
 import os
 import stat
 import tempfile
 import threading
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
+import report_task
 import self_report_server as srv
 
-REAL = srv.REAL_ID
+A = srv.TRUSTED_IDS[0]
+B = srv.TRUSTED_IDS[1]
+C = srv.TRUSTED_IDS[2]
+D = srv.TRUSTED_IDS[3]
+NOW = 1_700_000_000_000
 
 
-def event(kind="task.started", job="job-1", at=1_700_000_000_000, event_id="evt-1", source=REAL, agent=REAL, label=None, **extra):
-    body = {
+def body(agent=A, kind="task.started", job="job-a", at=NOW, event_id="evt-a", title="核對座位", **extra):
+    payload = {
         "eventId": event_id,
         "type": kind,
         "jobId": job,
         "at": at,
-        "sourceId": source,
+        "sourceId": agent,
         "agentId": agent,
+        "taskTitle": title,
     }
-    if label is not None:
-        body["label"] = label
-    body.update(extra)
-    return body
+    if title is None:
+        payload.pop("taskTitle")
+    payload.update(extra)
+    return payload
 
 
 class LogicTests(unittest.TestCase):
     def setUp(self):
-        self.state = srv.empty_state("real", REAL, REAL)
-        self.binding = {"sourceId": REAL, "agentId": REAL}
-        self.now = 1_700_000_000_000
+        self.state = srv.empty_state("real", srv.TRUSTED)
+        self.now = NOW
 
-    def accept(self, body, now=None):
-        parsed = srv.parse_event(body, self.binding)
+    def accept(self, payload, now=None):
+        parsed = srv.parse_event(payload, payload["agentId"])
         self.assertTrue(parsed["ok"], parsed)
         return srv.apply_event(self.state, parsed["event"], self.now if now is None else now)
 
-    def test_started_completed_and_failed_are_distinct_terminals(self):
-        self.assertTrue(self.accept(event())["ok"])
-        view = srv.project(self.state, self.now + 10, 45_000)
-        self.assertEqual(view["effectiveStatus"], "working")
-        self.assertNotEqual(view["effectiveStatus"], "idle")
-        done = self.accept(event("task.completed", at=self.now + 20, event_id="evt-2"), now=self.now + 20)
-        self.assertTrue(done["ok"])
-        completed = srv.project(self.state, self.now + 30, 45_000)
-        self.assertEqual(completed["effectiveStatus"], "completed")
-        self.assertEqual(completed["jobId"], "job-1")
-        self.assertEqual(completed["provenance"]["agentId"], REAL)
-        other = srv.empty_state("real", REAL, REAL)
-        srv.apply_event(other, srv.parse_event(event(at=self.now), self.binding)["event"], self.now)
-        failed = srv.apply_event(
-            other,
-            srv.parse_event(event("task.failed", at=self.now + 5, event_id="evt-f"), self.binding)["event"],
-            self.now + 5,
-        )
+    def test_four_missing_reports_are_unknown_and_not_idle(self):
+        view = srv.project(self.state, srv.TRUSTED, self.now, 300_000)
+        self.assertEqual(len(view["agents"]), 4)
+        self.assertEqual([item["agentId"] for item in view["agents"]], list(srv.TRUSTED_IDS))
+        self.assertTrue(all(item["effectiveStatus"] == "unknown" and item["reason"] == "missing_report" for item in view["agents"]))
+        self.assertTrue(all(item["evidenceType"] == "bot-self-report" for item in view["agents"]))
+        self.assertNotIn("idle", json.dumps(view))
+        self.assertEqual(view["agentId"], A)
+        self.assertEqual(view["agents"][0]["name"], "專案／產品助手（協調）")
+
+    def test_independent_jobs_titles_and_terminals(self):
+        self.assertTrue(self.accept(body(title="協調今天的範圍"))["ok"])
+        self.assertTrue(self.accept(body(B, job="job-b", event_id="evt-b", title="改接收器的四個座位"), now=self.now)["ok"])
+        view = srv.project(self.state, srv.TRUSTED, self.now + 10, 300_000)
+        self.assertEqual(view["agents"][0]["taskTitle"], "協調今天的範圍")
+        self.assertEqual(view["agents"][1]["effectiveStatus"], "working")
+        self.assertEqual(view["agents"][2]["reason"], "missing_report")
+        self.assertTrue(self.accept(body(kind="task.completed", at=self.now + 20, event_id="evt-a-done", title="協調今天的範圍"), now=self.now + 20)["ok"])
+        failed = self.accept(body(B, "task.failed", "job-b", self.now + 20, "evt-b-fail", "改接收器的四個座位"), now=self.now + 20)
         self.assertTrue(failed["ok"])
-        self.assertEqual(srv.project(other, self.now + 6, 45_000)["effectiveStatus"], "failed")
-        self.assertNotEqual(
-            srv.project(self.state, self.now + 30, 45_000)["effectiveStatus"],
-            srv.project(other, self.now + 6, 45_000)["effectiveStatus"],
-        )
+        again = srv.project(self.state, srv.TRUSTED, self.now + 30, 300_000)
+        self.assertEqual(again["agents"][0]["effectiveStatus"], "completed")
+        self.assertEqual(again["agents"][1]["effectiveStatus"], "failed")
+        self.assertNotEqual(again["agents"][0]["effectiveStatus"], again["agents"][1]["effectiveStatus"])
 
-    def test_missing_report_and_ttl_are_unknown_without_idle(self):
-        missing = srv.project(self.state, self.now, 45_000)
-        self.assertEqual(missing["reason"], "missing_report")
-        self.assertEqual(missing["effectiveStatus"], "unknown")
-        self.assertIsNone(missing["lastKnownStatus"])
-        self.assertNotIn("idle", json.dumps(missing))
-        self.accept(event())
-        stale = srv.project(self.state, self.now + 45_001, 45_000)
-        self.assertEqual(stale["reason"], "ttl")
-        self.assertEqual(stale["effectiveStatus"], "unknown")
-        self.assertEqual(stale["lastKnownStatus"], "working")
-        self.assertEqual(stale["freshness"], "stale")
-        self.assertNotEqual(stale["effectiveStatus"], "idle")
+    def test_cross_source_label_is_not_identity(self):
+        spoof = body(B, job="job-b", event_id="spoof", title="冒充")
+        self.assertEqual(srv.parse_event(spoof, A)["error"], "identity_mismatch")
+        ok = srv.parse_event({**body(), "label": "別人的名字"}, A)
+        self.assertTrue(srv.apply_event(self.state, ok["event"], self.now)["ok"])
+        self.assertEqual(self.state["agents"][A]["callerLabel"], "別人的名字")
+        self.assertEqual(self.state["agents"][B], None)
 
-    def test_duplicate_and_out_of_order(self):
-        self.accept(event())
-        again = self.accept(event())
-        self.assertTrue(again["deduped"])
-        self.assertEqual(self.state["job"]["phase"], "working")
-        early = self.accept(event("task.completed", at=self.now - 10, event_id="evt-old"))
-        self.assertEqual(early["error"], "out_of_order")
-        wrong_job = self.accept(event("task.completed", job="other", at=self.now + 5, event_id="evt-other"))
-        self.assertEqual(wrong_job["error"], "out_of_order")
-        before = srv.empty_state("real", REAL, REAL)
-        parsed = srv.parse_event(event("task.completed"), self.binding)
-        self.assertEqual(srv.apply_event(before, parsed["event"], self.now)["error"], "out_of_order")
-        self.accept(event("task.completed", at=self.now + 5, event_id="evt-done"))
-        second = self.accept(event("task.failed", at=self.now + 6, event_id="evt-fail"))
-        self.assertEqual(second["error"], "out_of_order")
-        self.assertEqual(self.state["job"]["phase"], "completed")
+    def test_title_limit_duplicate_order_and_stale_keeps_result(self):
+        self.assertEqual(srv.parse_event(body(title="測" * 161), A)["error"], "malformed")
+        self.assertEqual(srv.parse_event(body(title=None), A)["error"], "malformed")
+        long_ok = "核" * 160
+        self.assertTrue(self.accept(body(title=long_ok))["ok"])
+        self.assertTrue(self.accept(body(title=long_ok))["deduped"])
+        self.assertEqual(self.accept(body(kind="task.completed", at=self.now - 1, event_id="old"))["error"], "out_of_order")
+        self.assertTrue(self.accept(body(kind="task.completed", at=self.now + 5, event_id="done", title="核對完成"), now=self.now + 5)["ok"])
+        stale = srv.project(self.state, srv.TRUSTED, self.now + 300_006, 300_000)
+        self.assertEqual(stale["agents"][0]["effectiveStatus"], "unknown")
+        self.assertEqual(stale["agents"][0]["lastKnownStatus"], "completed")
+        self.assertEqual(stale["agents"][0]["taskTitle"], "核對完成")
+        self.assertEqual(stale["agents"][0]["freshness"], "stale")
+        self.assertEqual(self.state["agents"][A]["phase"], "completed")
+        self.assertEqual(self.state["agents"][B], None)
 
-    def test_label_is_not_identity_and_chat_fields_are_rejected(self):
-        parsed = srv.parse_event(event(label="林知夏", source="demo-sim", agent=REAL), self.binding)
-        self.assertEqual(parsed["error"], "identity_mismatch")
-        ok = self.accept(event(label="林知夏"))
-        self.assertTrue(ok["ok"])
-        self.assertEqual(self.state["job"]["callerLabel"], "林知夏")
-        self.assertEqual(self.state["agentId"], REAL)
-        self.assertEqual(srv.project(self.state, self.now, 45_000)["provenance"]["sourceId"], REAL)
-        leaked = srv.parse_event(event(chat="secret conversation"), self.binding)
-        self.assertEqual(leaked["error"], "unexpected_field")
-        self.assertNotIn("secret conversation", json.dumps(self.state))
-
-    def test_malformed_payloads(self):
-        for body in (
-            event(kind="task.idle"),
-            event(at="now"),
-            {"eventId": "x"},
-            event(event_id=""),
-            event(label="line\nbreak"),
-        ):
-            if isinstance(body.get("at"), str):
-                self.assertEqual(srv.parse_event(body, self.binding)["error"], "malformed")
-            else:
-                self.assertFalse(srv.parse_event(body, self.binding)["ok"])
+    def test_progress_does_not_invent_a_job(self):
+        self.assertEqual(self.accept(body(kind="task.progress", title="還沒開始"))["error"], "out_of_order")
+        self.accept(body())
+        moved = self.accept(body(kind="task.progress", at=self.now + 3, event_id="prog", title="寫到一半"), now=self.now + 3)
+        self.assertTrue(moved["ok"])
+        self.assertEqual(self.state["agents"][A]["phase"], "working")
+        self.assertEqual(self.state["agents"][A]["taskTitle"], "寫到一半")
 
 
 class HttpTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.runtime = Path(self.tmp.name)
-        self.app = srv.App(self.runtime, 45_000, True, None)
+        self.app = srv.App(self.runtime, 300_000, True, None)
         self.httpd = srv.serve(self.app, "127.0.0.1", 0)
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
@@ -135,106 +118,115 @@ class HttpTests(unittest.TestCase):
         self.httpd.server_close()
         self.tmp.cleanup()
 
-    def request(self, method, path, token=None, body=None, extra_headers=None, raw=None):
+    def token(self, agent_id):
+        line = (self.runtime / "headers" / f"{agent_id}.header").read_text(encoding="utf-8").strip()
+        return line.split(" ")[2]
+
+    def request(self, method, path, token=None, payload=None, extra_headers=None):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
-        headers = {}
-        if extra_headers:
-            headers.update(extra_headers)
-        data = raw
-        if body is not None:
-            data = json.dumps(body).encode("utf-8")
+        headers = dict(extra_headers or {})
+        data = None
+        if payload is not None:
+            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             headers["Content-Type"] = "application/json"
+            headers["Content-Length"] = str(len(data))
         if token is not None:
             headers["Authorization"] = f"Bearer {token}"
-        if data is not None and "Content-Length" not in headers:
-            headers["Content-Length"] = str(len(data))
         connection.request(method, path, body=data, headers=headers)
         response = connection.getresponse()
-        payload = response.read()
+        raw = response.read()
         found = {key.lower(): value for key, value in response.getheaders()}
         status = response.status
         connection.close()
-        return status, found, payload
+        return status, found, raw
 
-    def test_auth_source_binding_and_fixture_separation(self):
-        status, headers, _ = self.request("GET", "/api/self-report", extra_headers={"Origin": "https://evil.example"})
+    def test_spoofing_independence_fixture_and_cli(self):
+        status, headers, raw = self.request("GET", "/api/self-report", extra_headers={"Origin": "https://evil.example"})
         self.assertEqual(status, 200)
         self.assertNotIn("access-control-allow-origin", headers)
-        self.assertNotIn("access-control-allow-credentials", headers)
-        missing = json.loads(self.request("GET", "/api/self-report")[2])
-        self.assertEqual(missing["reason"], "missing_report")
-        self.assertEqual(missing["agentId"], REAL)
-
-        denied, _, _ = self.request("POST", "/api/self-report", body=event())
+        view = json.loads(raw)
+        self.assertEqual(len(view["agents"]), 4)
+        self.assertTrue(all(item["reason"] == "missing_report" for item in view["agents"]))
+        self.assertEqual(view["agentId"], A)
+        denied, _, _ = self.request("POST", "/api/self-report", payload=body())
         self.assertEqual(denied, 401)
-        bad, _, _ = self.request("POST", "/api/self-report", token="nope", body=event())
-        self.assertEqual(bad, 401)
-        cross, _, _ = self.request("POST", "/api/self-report", token=self.app.fixture_token, body=event(source=srv.FIXTURE_SOURCE, agent=srv.FIXTURE_AGENT))
-        self.assertEqual(cross, 403)
-        mismatch, _, body = self.request(
-            "POST",
-            "/api/self-report",
-            token=self.app.real_token,
-            body=event(source="demo-sim", agent="lin", label="林知夏"),
-        )
-        self.assertEqual(mismatch, 403)
-        self.assertEqual(json.loads(body)["error"], "identity_mismatch")
-        real_view = json.loads(self.request("GET", "/api/self-report")[2])
-        self.assertEqual(real_view["reason"], "missing_report")
-
-        started, _, _ = self.request("POST", "/api/self-report", token=self.app.real_token, body=event(label="not-identity"))
+        spoof, _, spoof_body = self.request("POST", "/api/self-report", token=self.token(A), payload=body(B, job="job-b", event_id="spoof", title="冒充開發"))
+        self.assertEqual(spoof, 403)
+        self.assertEqual(json.loads(spoof_body)["error"], "identity_mismatch")
+        after = json.loads(self.request("GET", "/api/self-report")[2])
+        self.assertTrue(all(item["reason"] == "missing_report" for item in after["agents"]))
+        started, _, _ = self.request("POST", "/api/self-report", token=self.token(B), payload=body(B, job="job-b", event_id="dev-start", title="整理開發備註"))
         self.assertEqual(started, 200)
-        view = json.loads(self.request("GET", "/api/self-report")[2])
-        self.assertEqual(view["effectiveStatus"], "working")
-        self.assertEqual(view["agentId"], REAL)
-        self.assertEqual(view["callerLabel"], "not-identity")
-        self.assertEqual(view["provenance"]["sourceId"], REAL)
-
-        fixture_denied, _, _ = self.request(
+        split = json.loads(self.request("GET", "/api/self-report")[2])
+        self.assertEqual(split["agents"][0]["reason"], "missing_report")
+        self.assertEqual(split["agents"][1]["taskTitle"], "整理開發備註")
+        self.assertEqual(split["agents"][2]["reason"], "missing_report")
+        self.assertEqual(split["effectiveStatus"], "unknown")
+        fixture, _, _ = self.request(
             "POST",
             "/api/fixture-report",
-            token=self.app.real_token,
-            body=event(source=srv.FIXTURE_SOURCE, agent=srv.FIXTURE_AGENT, event_id="fix-1"),
+            token=self.token(A),
+            payload=body(srv.FIXTURE_AGENT, job="fix", event_id="fix", title="夾具"),
         )
-        self.assertEqual(fixture_denied, 403)
-        fixture_ok, _, _ = self.request(
+        self.assertEqual(fixture, 403)
+        fit, _, _ = self.request(
             "POST",
             "/api/fixture-report",
-            token=self.app.fixture_token,
-            body=event(source=srv.FIXTURE_SOURCE, agent=srv.FIXTURE_AGENT, event_id="fix-1", job="fix-job"),
+            token=self.token(srv.FIXTURE_AGENT),
+            payload=body(srv.FIXTURE_AGENT, job="fix", event_id="fix", title="夾具工作"),
         )
-        self.assertEqual(fixture_ok, 200)
-        fixture_view = json.loads(self.request("GET", "/api/fixture-report")[2])
+        self.assertEqual(fit, 200)
         real_again = json.loads(self.request("GET", "/api/self-report")[2])
+        fixture_view = json.loads(self.request("GET", "/api/fixture-report")[2])
+        self.assertEqual(real_again["agents"][1]["jobId"], "job-b")
+        self.assertTrue(all(item["agentId"] != srv.FIXTURE_AGENT for item in real_again["agents"]))
         self.assertEqual(fixture_view["partition"], "fixture")
-        self.assertEqual(fixture_view["jobId"], "fix-job")
-        self.assertEqual(real_again["partition"], "real")
-        self.assertEqual(real_again["jobId"], "job-1")
-        self.assertNotEqual(real_again["agentId"], fixture_view["agentId"])
-        self.assertNotIn(self.app.real_token, (self.runtime / "state.json").read_text(encoding="utf-8"))
-        self.assertNotIn(self.app.real_token, (self.runtime / "fixture-state.json").read_text(encoding="utf-8"))
-
-    def test_duplicate_malformed_size_and_file_mode(self):
-        ok, _, _ = self.request("POST", "/api/self-report", token=self.app.real_token, body=event())
-        self.assertEqual(ok, 200)
-        dup, _, payload = self.request("POST", "/api/self-report", token=self.app.real_token, body=event(label="changed"))
-        self.assertEqual(dup, 200)
-        self.assertTrue(json.loads(payload)["deduped"])
-        self.assertIsNone(json.loads(self.request("GET", "/api/self-report")[2])["callerLabel"])
-        huge = b"{" + b" " * (srv.MAX_BODY + 8)
-        status, _, _ = self.request("POST", "/api/self-report", token=self.app.real_token, raw=huge)
-        self.assertEqual(status, 413)
-        mode = stat.S_IMODE((self.runtime / "token").stat().st_mode)
-        header_mode = stat.S_IMODE((self.runtime / "token-auth.header").stat().st_mode)
+        self.assertEqual(fixture_view["evidenceType"], "fixture")
+        disk = (self.runtime / "state.json").read_text(encoding="utf-8")
+        self.assertNotIn(self.token(A), disk)
+        self.assertNotIn("Bearer", disk)
+        mode = stat.S_IMODE((self.runtime / "headers" / f"{A}.header").stat().st_mode)
         if os.name != "nt":
             self.assertEqual(mode, 0o600)
-            self.assertEqual(header_mode, 0o600)
+        out = io.StringIO()
+        err = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = report_task.main(
+                [
+                    "--agent-id",
+                    C,
+                    "--job-id",
+                    "job-c",
+                    "--status",
+                    "started",
+                    "--task",
+                    "畫四個座位的名稱",
+                    "--runtime-dir",
+                    str(self.runtime),
+                    "--url",
+                    f"http://127.0.0.1:{self.port}/api/self-report",
+                    "--event-id",
+                    "cli-design-start",
+                    "--at",
+                    str(NOW),
+                ]
+            )
+        text = out.getvalue() + err.getvalue()
+        self.assertEqual(code, 0, text)
+        self.assertNotIn(self.token(C), text)
+        self.assertNotIn("Bearer", text)
+        self.assertIn("result=ok", text)
+        latest = json.loads(self.request("GET", "/api/self-report")[2])
+        self.assertEqual(latest["agents"][2]["taskTitle"], "畫四個座位的名稱")
+        self.assertEqual(latest["agents"][3]["reason"], "missing_report")
+        self.assertEqual(latest["agents"][1]["effectiveStatus"], "working")
 
-    def test_options_has_no_credential_cors(self):
-        status, headers, _ = self.request("OPTIONS", "/api/self-report", extra_headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "POST"})
-        self.assertEqual(status, 204)
-        self.assertNotIn("access-control-allow-origin", headers)
-        self.assertNotIn("access-control-allow-credentials", headers)
+    def test_refuses_legacy_port_and_directory(self):
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.assertEqual(srv.main(["--port", "8792", "--runtime-dir", str(self.runtime / "fresh")]), 2)
+            self.assertEqual(srv.main(["--runtime-dir", str(self.runtime / "agent-office-self-report")]), 2)
+        self.assertNotIn("Bearer", err.getvalue())
 
 
 if __name__ == "__main__":

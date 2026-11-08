@@ -22,13 +22,17 @@ import { reducer, selectAgent, type AgentSnapshot, type OfficeState } from "../c
 import { OfficeScene } from "../office";
 import "../office/OfficeScene.css";
 import {
+  EVIDENCE_TYPE,
   FIXTURE_BANNER,
   REAL_BANNER,
   FIXTURE_REPORT_URL,
   SELF_REPORT_URL,
+  TRUSTED,
+  localFallback,
   projectSelfReport,
   requestedPartition,
   type RealViewModel,
+  type SeatModel,
   type SelfReportPayload,
 } from "../adapters/selfReport";
 
@@ -93,6 +97,7 @@ export function AgentOfficeApp() {
   const [reducedMotion, setReducedMotion] = useState(false);
   const [live, setLive] = useState<RealViewModel | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
+  const [reportSelection, setReportSelection] = useState<string>(TRUSTED[0].id);
   const nonce = useRef(10);
   const indexRef = useRef(0);
   const dueRef = useRef(0);
@@ -217,8 +222,22 @@ export function AgentOfficeApp() {
     nonce.current += 1;
   }
 
+  const shown = demoMode ? null : (live ?? localFallback(livePartition));
+  const selectedSeat = shown?.seats.find((seat) => seat.agent.id === reportSelection) ?? shown?.seats[0] ?? null;
+
   function onKeys(event: KeyboardEvent) {
-    if (office.activeMode !== "demo") return;
+    if (!demoMode) {
+      const ids = (shown?.seats ?? []).map((seat) => seat.agent.id);
+      const index = Math.max(0, ids.indexOf(reportSelection));
+      let next = reportSelection;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") next = ids[(index + 1) % ids.length] ?? reportSelection;
+      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = ids[(index - 1 + ids.length) % ids.length] ?? reportSelection;
+      else if (event.key >= "1" && event.key <= "4") next = ids[Number(event.key) - 1] ?? reportSelection;
+      else return;
+      event.preventDefault();
+      setReportSelection(next);
+      return;
+    }
     const ids = DEMO_ROSTER.map((agent) => agent.id);
     const index = Math.max(0, ids.indexOf(selectedId as (typeof ids)[number]));
     let next = selectedId;
@@ -241,19 +260,19 @@ export function AgentOfficeApp() {
               ? "四位示範代理人坐在固定座位。點一個人，就能看到手上的事，以及你現在還掌握得住什麼。"
               : livePartition === "fixture"
                 ? "這是本機夾具，不是父層 Bot 的回報，也不能當成已經看見真實機器人。"
-                : "這一頁只讀本機自報。還沒收到回報、或超過保存時間，就是未知，不是閒置。"}
+                : "這一頁讀四個受信任來源的 bot-self-report。還沒收到回報，或超過保存時間，就是未知。預設 300 秒，不是官方保證。"}
           </p>
         </div>
-        <p className={demoMode ? "banner" : "banner banner-real"} role="status" data-testid="mode-banner" data-partition={demoMode ? "demo" : live?.partition ?? livePartition}>
-          {demoMode ? "模擬資料・未連接真實 Agent" : live?.banner ?? (livePartition === "fixture" ? FIXTURE_BANNER : REAL_BANNER)}
+        <p className={demoMode ? "banner" : "banner banner-real"} role="status" data-testid="mode-banner" data-partition={demoMode ? "demo" : shown?.partition ?? livePartition} data-evidence={demoMode ? "demo" : shown?.evidenceType ?? EVIDENCE_TYPE}>
+          {demoMode ? "模擬資料・未連接真實 Agent" : shown?.banner ?? (livePartition === "fixture" ? FIXTURE_BANNER : REAL_BANNER)}
         </p>
       </header>
       <div className="tabs" role="tablist" aria-label="資料模式">
         <button type="button" className="tab" role="tab" aria-selected={demoMode} data-testid="tab-demo" onClick={() => switchMode("demo")}>示範辦公室</button>
         <button type="button" className="tab" role="tab" aria-selected={!demoMode} data-testid="tab-live" onClick={() => switchMode("real")}>Bot自行回報</button>
       </div>
-      {!demoMode && !live ? (
-        <p className="live-callout" data-testid="live-empty" data-error={liveError ?? ""}>還沒有讀到本機回報。這不是閒置，也不是父層 Bot 已經回報的證明。</p>
+      {!demoMode && liveError ? (
+        <p className="live-callout" data-testid="live-note" data-error={liveError}>接收器這次沒讀到。座位仍是尚未收到回報，這不是閒置。</p>
       ) : null}
       <div className="shell">
         <section onKeyDown={onKeys}>
@@ -268,22 +287,18 @@ export function AgentOfficeApp() {
                 reducedMotion={reducedMotion}
               />
             </div>
-          ) : live ? (
+          ) : shown ? (
             <div className="floor-slot">
               <OfficeScene
                 className="floor"
-                agents={[live.agent]}
-                selectedId={live.agent.id}
+                agents={shown.seats.map((seat) => seat.agent)}
+                selectedId={selectedSeat?.agent.id}
+                onSelect={setReportSelection}
                 config={SCENE_EGG}
                 reducedMotion={reducedMotion}
               />
             </div>
-          ) : (
-            <div className="live-floor" data-testid="live-floor">
-              <p>沒有讀到回報</p>
-              <p>示範座位不會出現在這裡。</p>
-            </div>
-          )}
+          ) : null}
           <p className="caption">
             {demoMode
               ? "方向鍵或數字鍵 1 到 4 可以換人。打盹只在明確閒置、而且資料還新鮮時出現。"
@@ -291,8 +306,8 @@ export function AgentOfficeApp() {
           </p>
         </section>
         <aside className="side">
-          {demoMode ? <SummaryPanel summary={summary} onSelect={setSelectedId} /> : live ? <RealSummary model={live} /> : <SummaryPanel summary={summary} />}
-          {demoMode ? <DetailPanel state={office} agentId={selectedId} /> : live ? <RealDetail model={live} /> : <DetailPanel state={office} agentId={selectedId} />}
+          {demoMode || !shown || !selectedSeat ? <SummaryPanel summary={summary} onSelect={demoMode ? setSelectedId : undefined} /> : <RealSummary model={shown} />}
+          {demoMode || !selectedSeat ? <DetailPanel state={office} agentId={selectedId} /> : <RealDetail seat={selectedSeat} />}
         </aside>
       </div>
       {demoMode ? <section className="sim" aria-label="模擬操作" data-testid="sim-panel">
@@ -324,7 +339,7 @@ export function AgentOfficeApp() {
         {notice ? <p className="notice" role="status" data-testid="sim-notice">{notice}</p> : null}
       </section> : null}
       <footer className="foot">
-        <p>{demoMode ? "完成或失敗都不會自己變成閒置。" : "自報逾時就是未知。這一頁不會自己補心跳，也不會把人改成閒置。"}</p>
+        <p>{demoMode ? "完成或失敗都不會自己變成閒置。" : shown?.partition === "fixture" ? "這一頁是夾具，不是四個受信任來源，也不能當成父層 Bot 的回報。" : "證據類型 bot-self-report。逾時後有效狀態是未知，最後已知的工作還留在詳情。不會自己補心跳或閒置。"}</p>
         {demoMode ? (
           <details>
             <summary>來源與時間設定</summary>
@@ -425,7 +440,7 @@ function RealSummary({ model }: { model: RealViewModel }) {
   return (
     <section className="panel" data-testid="summary-panel" aria-label="監督總覽">
       <h2>監督總覽 <span className="stamp">唯讀</span></h2>
-      <p className="hint">共 1 人。沒有派工，沒有閒置推論。</p>
+      <p className="hint">共 {model.seats.length} 人。證據 {model.evidenceType}。沒有派工，沒有閒置推論。</p>
       <dl className="counts">
         {rows.map(([label, value]) => (
           <div key={label}><dt>{label}</dt><dd>{value}</dd></div>
@@ -436,27 +451,32 @@ function RealSummary({ model }: { model: RealViewModel }) {
   );
 }
 
-function RealDetail({ model }: { model: RealViewModel }) {
+function RealDetail({ seat }: { seat: SeatModel }) {
+  const when = seat.reportedAt != null ? `${taipei.format(new Date(seat.reportedAt))}（台北）` : "還沒有時間";
   return (
     <section className="panel" data-testid="detail-panel" aria-label="席位詳情">
       <h2>席位詳情</h2>
-      <p className="detail-status" data-testid="detail-status">{model.agent.name}・{model.effectiveLabel}</p>
-      <p className="hint">{model.agent.role}</p>
+      <p className="detail-status" data-testid="detail-status">{seat.agent.name}・{seat.effectiveLabel}</p>
+      <p className="hint">{seat.agent.role}</p>
       <dl className="facts">
         <dt>身分</dt>
-        <dd>{model.identity}</dd>
+        <dd>{seat.agent.id}</dd>
         <dt>手上的事</dt>
-        <dd>{model.jobText}（最後已知 {model.lastKnownLabel}）</dd>
-        <dt>呼叫端標籤</dt>
-        <dd>{model.callerLabel ? `${model.callerLabel}（非身分）` : "沒有"}</dd>
-        <dt>新鮮度</dt>
-        <dd>{model.agent.freshness === "stale" ? "已過期，目前未知" : model.reason === "missing_report" ? "尚未收到回報" : "新鮮"}</dd>
+        <dd>{seat.taskTitle}</dd>
+        <dt>目前</dt>
+        <dd>{seat.effectiveLabel}</dd>
+        <dt>最後已知</dt>
+        <dd>{seat.lastKnownLabel}{seat.agent.freshness === "stale" ? "。逾時後有效狀態是未知，這筆結果還留著。" : ""}</dd>
+        <dt>回報時間</dt>
+        <dd>{when}</dd>
+        <dt>證據</dt>
+        <dd>{seat.evidenceType}</dd>
         <dt>閒置小動畫</dt>
-        <dd>{model.egg}</dd>
+        <dd>不會出現</dd>
       </dl>
       <details className="dev-note" open>
         <summary>來源細節</summary>
-        <p>{model.provenanceText}</p>
+        <p>{seat.provenanceText}</p>
       </details>
     </section>
   );

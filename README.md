@@ -74,7 +74,14 @@ cd $env:USERPROFILE\Desktop\agent-office-self-report
 powershell -ExecutionPolicy Bypass -File .\Start-AgentOffice.ps1
 ```
 
-父層 Bot 的 POST 必須讀權杖檔，不要把密文寫進指令本身。完整命令見 `receiver/README-BOX.md`。GET 確認：
+8792 上已經在跑的單來源接收器不要關，也不要覆寫它的 runtime。四個受信任來源用另一個包，埠 `127.0.0.1:8793`，runtime `%LOCALAPPDATA%\agent-office-multi-report`。說明在 `receiver/README-MULTI.md`。每個 bot 只讀自己的 header，父層不要代送。
+
+```powershell
+cd $env:USERPROFILE\Desktop\agent-office-multi-report
+powershell -ExecutionPolicy Bypass -File .\Start-MultiReport.ps1
+```
+
+舊的單來源 GET 確認：
 
 ```powershell
 curl.exe -sS "http://127.0.0.1:8792/api/self-report"
