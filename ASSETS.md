@@ -1,5 +1,7 @@
 # Agent Office v0.2 assets
 
+Discussion placeholders (`look-walk-down-0..3`, `look-walk-left-0..3`, `look-stand-back-0`, `look-talk-0..1`, `look-think-0..1`, `look-sit-side-0`, `dialog`, `think-dots`, `dash-tile`, `empty-chair`, `swatch`, `checklist`) are procedural frames in the same atlas. Right-facing walks mirror the left frames in CSS. A later pixel-art pass can replace these names without code changes. `office-atlas.json` field `frameNotes` lists them.
+
 Scene pixels use only the 32-color style B palette. Status colors live in the UI stylesheet, not in the atlas. Replacing `public/art/office-atlas.png` and `public/art/office-atlas.json` together changes the art; the renderer looks sprites up by name.
 
 CC0 legal text: [https://creativecommons.org/publicdomain/zero/1.0/legalcode](https://creativecommons.org/publicdomain/zero/1.0/legalcode)

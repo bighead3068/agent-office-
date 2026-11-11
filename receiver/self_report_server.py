@@ -416,6 +416,23 @@ CREATE TABLE IF NOT EXISTS events (
   payload_hash TEXT NOT NULL,
   accepted_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS discussions (
+  discussion_id TEXT PRIMARY KEY,
+  host_id TEXT NOT NULL,
+  with_agent_id TEXT NOT NULL,
+  topic TEXT,
+  mode TEXT,
+  max_ms INTEGER NOT NULL,
+  started_at INTEGER NOT NULL,
+  ended_at INTEGER,
+  outcome TEXT
+);
+CREATE TABLE IF NOT EXISTS discussion_members (
+  discussion_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  joined_at INTEGER NOT NULL,
+  PRIMARY KEY (discussion_id, agent_id)
+);
 CREATE TABLE IF NOT EXISTS agent_state (
   agent_id TEXT PRIMARY KEY,
   job_id TEXT,
@@ -484,9 +501,131 @@ class OfficeStore:
                 raise
             return seat
 
+    def _cancel_discussions(self, db: sqlite3.Connection, agent_id: str, now: int) -> None:
+        db.execute(
+            """
+            UPDATE discussions SET ended_at = ?, outcome = 'cancel'
+            WHERE ended_at IS NULL AND (
+              host_id = ? OR discussion_id IN (SELECT discussion_id FROM discussion_members WHERE agent_id = ?)
+            )
+            """,
+            (now, agent_id, agent_id),
+        )
+
+    def _accept_discussion(self, bound_id: str, body: dict, now: int) -> tuple[int, dict]:
+        kind = body.get("type")
+        if kind not in {"discussion.started", "discussion.joined", "discussion.ended"}:
+            return 400, {"ok": False, "error": "malformed"}
+        if body.get("agentId") != bound_id or body.get("sourceId") != bound_id:
+            return 403, {"ok": False, "error": "identity_mismatch"}
+        event_id = body.get("eventId")
+        discussion_id = body.get("discussionId")
+        at = body.get("at")
+        if not isinstance(event_id, str) or not ID_RE.fullmatch(event_id):
+            return 400, {"ok": False, "error": "malformed"}
+        if not isinstance(discussion_id, str) or not ID_RE.fullmatch(discussion_id):
+            return 400, {"ok": False, "error": "malformed"}
+        if type(at) is not int or at > now + FUTURE_SKEW_MS:
+            return 400, {"ok": False, "error": "malformed"}
+        digest = hashlib.sha256(json.dumps({
+            "agentId": bound_id, "discussionId": discussion_id, "type": kind,
+            "withAgentId": body.get("withAgentId"), "topic": body.get("topic"), "outcome": body.get("outcome"),
+        }, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                if db.execute("SELECT agent_id FROM agents WHERE agent_id = ?", (bound_id,)).fetchone() is None:
+                    db.execute("ROLLBACK")
+                    return 403, {"ok": False, "error": "unknown_agent"}
+                existing = db.execute("SELECT payload_hash FROM events WHERE event_id = ?", (event_id,)).fetchone()
+                if existing is not None:
+                    db.execute("ROLLBACK")
+                    if existing["payload_hash"] != digest:
+                        return 409, {"ok": False, "error": "event_id_conflict"}
+                    return 200, {"ok": True, "deduped": True}
+                row = db.execute("SELECT * FROM discussions WHERE discussion_id = ?", (discussion_id,)).fetchone()
+                if kind == "discussion.ended" and row is None:
+                    db.execute("ROLLBACK")
+                    return 200, {"ok": True, "ignored": True}
+                if kind == "discussion.started":
+                    other = body.get("withAgentId")
+                    if not isinstance(other, str) or not ID_RE.fullmatch(other) or other == bound_id:
+                        db.execute("ROLLBACK")
+                        return 400, {"ok": False, "error": "with_self" if other == bound_id else "malformed"}
+                    if db.execute("SELECT agent_id FROM agents WHERE agent_id = ?", (other,)).fetchone() is None:
+                        db.execute("ROLLBACK")
+                        return 400, {"ok": False, "error": "unknown_agent"}
+                    topic = body.get("topic")
+                    if topic is not None and (not isinstance(topic, str) or len(topic) > 24 or TITLE_BAD.search(topic)):
+                        db.execute("ROLLBACK")
+                        return 400, {"ok": False, "error": "malformed"}
+                    max_ms = body.get("maxMs", 600_000)
+                    if type(max_ms) is not int or not 1 <= max_ms <= 3_600_000:
+                        db.execute("ROLLBACK")
+                        return 400, {"ok": False, "error": "malformed"}
+                    mode = body.get("mode")
+                    if mode is not None and mode not in {"meeting", "pair"}:
+                        db.execute("ROLLBACK")
+                        return 400, {"ok": False, "error": "malformed"}
+                    if row is None:
+                        db.execute(
+                            """
+                            INSERT INTO discussions (discussion_id, host_id, with_agent_id, topic, mode, max_ms, started_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (discussion_id, bound_id, other, topic, mode, max_ms, at),
+                        )
+                    db.execute(
+                        "INSERT OR IGNORE INTO discussion_members (discussion_id, agent_id, joined_at) VALUES (?, ?, ?)",
+                        (discussion_id, bound_id, at),
+                    )
+                elif kind == "discussion.joined":
+                    if row is None or row["ended_at"] is not None:
+                        db.execute("ROLLBACK")
+                        return 200, {"ok": True, "ignored": True}
+                    count = db.execute("SELECT COUNT(*) AS n FROM discussion_members WHERE discussion_id = ?", (discussion_id,)).fetchone()["n"]
+                    if count >= 4:
+                        db.execute("ROLLBACK")
+                        return 409, {"ok": False, "error": "discussion_full"}
+                    db.execute(
+                        "INSERT OR IGNORE INTO discussion_members (discussion_id, agent_id, joined_at) VALUES (?, ?, ?)",
+                        (discussion_id, bound_id, at),
+                    )
+                else:
+                    outcome = body.get("outcome")
+                    if outcome not in {"start_task", "resume", "cancel"}:
+                        db.execute("ROLLBACK")
+                        return 400, {"ok": False, "error": "malformed"}
+                    member = db.execute(
+                        "SELECT 1 FROM discussion_members WHERE discussion_id = ? AND agent_id = ?",
+                        (discussion_id, bound_id),
+                    ).fetchone()
+                    if member is None and row["host_id"] != bound_id:
+                        db.execute("ROLLBACK")
+                        return 403, {"ok": False, "error": "unknown_agent"}
+                    if row["ended_at"] is None:
+                        db.execute(
+                            "UPDATE discussions SET ended_at = ?, outcome = ? WHERE discussion_id = ?",
+                            (at, outcome, discussion_id),
+                        )
+                db.execute(
+                    """
+                    INSERT INTO events (event_id, agent_id, job_id, type, at, task_title, caller_label, payload_hash, accepted_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (event_id, bound_id, discussion_id, kind, at, body.get("topic"), body.get("outcome"), digest, now),
+                )
+                db.execute("COMMIT")
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+        return 200, {"ok": True, "deduped": False}
+
     def accept(self, bound_id: str, body: object, now: int) -> tuple[int, dict]:
         if is_demo_body(body):
             return 403, {"ok": False, "error": "demo_rejected"}
+        if isinstance(body, dict) and isinstance(body.get("type"), str) and str(body.get("type")).startswith("discussion."):
+            return self._accept_discussion(bound_id, body, now)
         parsed = parse_event(body, bound_id)
         if not parsed["ok"]:
             code = 403 if parsed["error"] in {"identity_mismatch", "demo_rejected"} else 400
@@ -528,6 +667,8 @@ class OfficeStore:
                     db.execute("ROLLBACK")
                     return 409, decision
                 self._write_event(db, state, event, digest, now)
+                if event["type"] in {"task.waiting", "task.blocked", "task.failed"}:
+                    self._cancel_discussions(db, bound_id, now)
                 db.execute("COMMIT")
             except Exception:
                 db.execute("ROLLBACK")
@@ -629,6 +770,27 @@ class OfficeStore:
             }
             for row in recent_rows[-MAX_RECENT:]
         ]
+        discussions = []
+        with self.connect() as db:
+            open_rows = [dict(row) for row in db.execute("SELECT * FROM discussions WHERE ended_at IS NULL ORDER BY started_at ASC")]
+            for item in open_rows:
+                members = [
+                    {"agentId": member["agent_id"], "joinedAt": member["joined_at"]}
+                    for member in db.execute(
+                        "SELECT agent_id, joined_at FROM discussion_members WHERE discussion_id = ? ORDER BY joined_at ASC",
+                        (item["discussion_id"],),
+                    )
+                ]
+                discussions.append({
+                    "discussionId": item["discussion_id"],
+                    "hostId": item["host_id"],
+                    "withAgentId": item["with_agent_id"],
+                    "topic": item["topic"],
+                    "mode": item["mode"],
+                    "maxMs": item["max_ms"],
+                    "startedAt": item["started_at"],
+                    "members": members,
+                })
         payload = {
             "ok": True,
             "version": VERSION,
@@ -638,6 +800,7 @@ class OfficeStore:
             "serverNow": now,
             "agents": agents,
             "recent": recent,
+            "discussions": discussions,
         }
         if receiver_id:
             payload["receiverId"] = receiver_id

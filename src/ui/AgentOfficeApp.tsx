@@ -94,6 +94,8 @@ function DemoOffice() {
   const cast = new URLSearchParams(search).get("cast")
   const openMenu = new URLSearchParams(search).get("menu") === "open"
   const linkDown = new URLSearchParams(search).get("link") === "down"
+  const schemeQuery = Number(new URLSearchParams(search).get("scheme") || "1")
+  const [scheme, setScheme] = useState<1 | 2 | 3>(schemeQuery === 2 || schemeQuery === 3 ? schemeQuery : 1)
   const boot = useRef({ now: Date.now(), nonce: 1 })
   const [office, setOffice] = useState<OfficeState>(() => createScenario("opening", boot.current.now))
   const [scenario, setScenario] = useState<ScenarioId>("opening")
@@ -117,19 +119,31 @@ function DemoOffice() {
   }
 
   const agents = sceneAgents(office).map(toDesk)
+  const roster = cast === "board" || cast === "clear" ? boardAgents(Date.now()) : agents
+  const host = roster[0]
+  const partner = roster[2] ?? roster[1]
+  const discussion = host && partner && !linkDown ? {
+    scheme,
+    hostId: host.agentId,
+    withId: partner.agentId,
+    members: scheme === 2 ? [host.agentId, partner.agentId, roster[1]?.agentId].filter((id): id is string => Boolean(id)) : scheme === 1 ? [host.agentId] : [host.agentId, partner.agentId],
+    topic: "對一下座位",
+    hostName: host.name,
+    withName: partner.name,
+  } : null
   return (
     <div className="office-page" data-view="demo" data-partition="demo">
       <header className="topbar">
         <h1>代理人辦公室</h1>
         <p className="mode-badge mode-demo" role="status" data-testid="mode-banner"><span data-testid="demo-badge">模擬</span></p>
-        <p className="live-callout">未連接真實 Agent</p>
+        <p className="live-callout">未連接真實 Agent <button type="button" className="sim-btn" data-testid="scheme-toggle" onClick={() => setScheme((value) => (value === 3 ? 1 : ((value + 1) as 1 | 2 | 3)))}>方案 {scheme}（示範）</button></p>
       </header>
       <p className="sr-only">看泡泡就知道誰在做事、誰卡住、誰做完、誰未知。這頁是模擬。</p>
       {cast === "board"
-        ? <OfficeFloor agents={boardAgents(Date.now())} selectedId={selectedId} onSelect={setSelectedId} demo sourceLabel="模擬" disconnected={linkDown} menuOpen={openMenu} />
+        ? <OfficeFloor agents={roster} selectedId={selectedId} onSelect={setSelectedId} demo sourceLabel="模擬" disconnected={linkDown} menuOpen={openMenu} discussion={discussion} />
         : cast === "clear"
-          ? <OfficeFloor agents={boardAgents(Date.now()).map((agent) => ({ ...agent, effectiveStatus: "working", lastKnownStatus: "working", freshness: "fresh" }))} selectedId={selectedId} onSelect={setSelectedId} demo />
-        : <OfficeFloor agents={agents} selectedId={selectedId} onSelect={setSelectedId} demo sourceLabel="模擬" />}
+          ? <OfficeFloor agents={roster.map((agent) => ({ ...agent, effectiveStatus: "working", lastKnownStatus: "working", freshness: "fresh" }))} selectedId={selectedId} onSelect={setSelectedId} demo discussion={discussion} />
+        : <OfficeFloor agents={agents} selectedId={selectedId} onSelect={setSelectedId} demo sourceLabel="模擬" resetKey={scenario} discussion={discussion} />}
       {cast === "board" ? null : (
       <details className="sim" data-testid="sim-panel">
         <summary>模擬操作</summary>

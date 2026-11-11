@@ -246,6 +246,37 @@ class StoreTests(unittest.TestCase):
                         srv.issue_header(self.runtime, "bot-locked")
         self.assertFalse((self.runtime / "headers" / "bot-locked.header").exists())
 
+    def test_discussion_order_dedupe_and_self_target(self):
+        early = self.store.accept(A, {
+            "eventId": "end-early", "type": "discussion.ended", "discussionId": "talk-1",
+            "at": NOW, "sourceId": A, "agentId": A, "outcome": "cancel",
+        }, NOW)
+        self.assertTrue(early[1].get("ignored"))
+        started = self.store.accept(A, {
+            "eventId": "start-1", "type": "discussion.started", "discussionId": "talk-1",
+            "at": NOW + 1, "sourceId": A, "agentId": A, "withAgentId": B, "topic": "對座位",
+        }, NOW + 1)
+        self.assertEqual(started[0], 200, started)
+        again = self.store.accept(A, {
+            "eventId": "start-1", "type": "discussion.started", "discussionId": "talk-1",
+            "at": NOW + 1, "sourceId": A, "agentId": A, "withAgentId": B, "topic": "對座位",
+        }, NOW + 2)
+        self.assertTrue(again[1]["deduped"])
+        selfish = self.store.accept(A, {
+            "eventId": "start-self", "type": "discussion.started", "discussionId": "talk-2",
+            "at": NOW + 3, "sourceId": A, "agentId": A, "withAgentId": A,
+        }, NOW + 3)
+        self.assertEqual(selfish[1]["error"], "with_self")
+        joined = self.store.accept(B, {
+            "eventId": "join-1", "type": "discussion.joined", "discussionId": "talk-1",
+            "at": NOW + 4, "sourceId": B, "agentId": B,
+        }, NOW + 4)
+        self.assertEqual(joined[0], 200, joined)
+        view = self.store.project(NOW + 5, 300_000)
+        self.assertEqual(view["discussions"][0]["hostId"], A)
+        self.assertEqual(len(view["discussions"][0]["members"]), 2)
+        self.assertEqual(view["agents"][0]["effectiveStatus"], "unknown")
+
 
 class HttpTests(unittest.TestCase):
     def setUp(self):

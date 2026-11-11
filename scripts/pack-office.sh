@@ -14,6 +14,12 @@ if grep -R -n -E 'Bearer [A-Za-z0-9_-]{20,}' "$stage/dist" "$stage/Start-AgentOf
 fi
 rm -f "$root/packaging/agent-office-v0.2.zip"
 ( cd "$stage" && zip -r -X "$root/packaging/agent-office-v0.2.zip" . )
+python3 - <<'PY' "$root/Start-AgentOffice.ps1"
+import pathlib, sys
+payload = pathlib.Path(sys.argv[1]).read_bytes()
+if not payload.startswith(b"\xef\xbb\xbf"):
+    raise SystemExit("Start-AgentOffice.ps1 must be UTF-8 with BOM")
+PY
 python3 - <<'PY' "$root/packaging/agent-office-v0.2.zip"
 import sys, zipfile
 names = zipfile.ZipFile(sys.argv[1]).namelist()
@@ -21,6 +27,8 @@ if any(name.startswith("agent-office/") for name in names):
     raise SystemExit("zip has a nested folder")
 if "Start-AgentOffice.ps1" not in names or "receiver/self_report_server.py" not in names:
     raise SystemExit("zip is missing the launcher or receiver")
+if not zipfile.ZipFile(sys.argv[1]).read("Start-AgentOffice.ps1").startswith(b"\xef\xbb\xbf"):
+    raise SystemExit("packaged launcher is missing the UTF-8 BOM")
 print("zip entries", len(names))
 PY
 mkdir -p /opt/cursor/artifacts

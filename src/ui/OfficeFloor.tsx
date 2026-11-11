@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react"
 import atlasUrl from "../../public/art/office-atlas.png"
 import manifest from "../../public/art/office-atlas.json"
+import { discussionPath, MEET, pointAlong, type Scheme } from "../office/discussion"
 import { hashId, resolveLook } from "../office/look"
 import {
   ATTENTION_ORDER,
@@ -195,7 +196,7 @@ function usePose(look: string, status: string, fresh: boolean, reduced: boolean,
 }
 
 const PREVIOUS_WORD: Record<string, string> = {
-  completed: "完成", failed: "失敗", blocked: "受阻", working: "工作中", waiting: "等待", idle: "閒置", offline: "離線",
+  completed: "完成", failed: "失敗", blocked: "受阻", working: "工作中", waiting: "等待", idle: "閒置", offline: "離線", unknown: "未知",
 }
 
 function previousLine(agent: DeskAgent): string | null {
@@ -245,7 +246,7 @@ function useBubbleBox(anchorX: number) {
     const height = Math.round(measured.height)
     const raw = Math.round(-width / 2)
     const left = Math.round(Math.max(8 - anchorX, Math.min(SCENE_W - 8 - anchorX - width, raw)))
-    const top = Math.round(-(height + 76))
+    const top = Math.round(-(height + 83))
     setBox((prev) => (prev.width === width && prev.left === left && prev.height === height && prev.top === top ? prev : { width, left, height, top }))
   })
   return { ref, box }
@@ -302,7 +303,7 @@ function SeatActor({ agent, anchor, reduced }: { agent: DeskAgent; anchor: reado
 }
 
 function seedDemoChanges(agents: readonly DeskAgent[], now: number): Change[] {
-  return agents.slice(0, 4).map((agent, index) => ({
+    return agents.slice(0, 4).filter((agent) => agent.agentId).slice(0, 4).map((agent, index) => ({
     id: `demo-seed-${agent.agentId}`,
     at: now - (index + 1) * 4 * 60_000,
     name: plateName(agent.name),
@@ -310,16 +311,16 @@ function seedDemoChanges(agents: readonly DeskAgent[], now: number): Change[] {
   }))
 }
 
-function AttentionRows({ agents, now, onChoose }: { agents: readonly DeskAgent[]; now: number; onChoose: (id: string) => void }) {
+function AttentionRows({ agents, now, onChoose, stale = false }: { agents: readonly DeskAgent[]; now: number; onChoose: (id: string) => void; stale?: boolean }) {
   return (
     <>
       {agents.map((agent) => (
-        <button key={agent.agentId} type="button" className={`ledger-row row-${agent.effectiveStatus}`} data-agent-id={agent.agentId} onClick={() => onChoose(agent.agentId)}>
+        <button key={agent.agentId} type="button" className={`ledger-row row-${agent.effectiveStatus}${stale ? " is-stale" : ""}`} data-agent-id={agent.agentId} onClick={() => onChoose(agent.agentId)}>
           <span className={`chip chip-${agent.effectiveStatus}`}><StatusIcon status={agent.effectiveStatus} />{agent.effectiveStatus === "blocked" ? "受阻" : agent.effectiveStatus === "failed" ? "失敗" : "等待"}</span>
           <b>{plateName(agent.name)}</b>
           <span className="seat-code">{manifest.seats[agent.seat]?.id ?? ""}</span>
           <span className="ledger-task">{agent.taskTitle || "尚未回報"}</span>
-          <em>{elapsedLabel(agent.lastReportAt, now)}</em>
+          <em>{elapsedLabel(agent.lastReportAt, now)}{stale ? " ⏱" : ""}</em>
         </button>
       ))}
     </>
@@ -335,6 +336,8 @@ export function OfficeFloor({
   sourceLabel = "Bot自行回報",
   disconnected = false,
   menuOpen = false,
+  resetKey = "",
+  discussion = null,
 }: {
   agents: readonly DeskAgent[]
   selectedId?: string
@@ -344,6 +347,8 @@ export function OfficeFloor({
   sourceLabel?: string
   disconnected?: boolean
   menuOpen?: boolean
+  resetKey?: string
+  discussion?: { scheme: Scheme; hostId: string; withId: string; members: string[]; topic: string; hostName: string; withName: string } | null
 }) {
   const viewport = useViewport()
   const tier = tierOf(viewport.width, viewport.height)
@@ -369,17 +374,22 @@ export function OfficeFloor({
   const lastReport = agents.reduce((latest, agent) => Math.max(latest, agent.lastReportAt ?? 0), 0)
 
   useEffect(() => {
+    if (demo) setChanges(seedDemoChanges(agents, stamp))
+  }, [demo, resetKey])
+  useEffect(() => {
+    if (disconnected) return
     const seen = previous.current
     const next: Change[] = []
     for (const agent of agents) {
       const before = seen.get(agent.agentId)
-      if (before && before !== agent.effectiveStatus && agent.reason !== "ttl") {
+      const skip = agent.reason === "ttl" || agent.reason === "disconnect"
+      if (before && before !== agent.effectiveStatus && !skip) {
         next.push({ id: `${agent.agentId}-${agent.effectiveStatus}-${stamp}`, at: stamp, name: plateName(agent.name), status: agent.effectiveStatus })
       }
       seen.set(agent.agentId, agent.effectiveStatus)
     }
     if (next.length > 0) setChanges((current) => [...next, ...current].slice(0, 4))
-  }, [agents, stamp])
+  }, [agents, disconnected, stamp])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -464,7 +474,13 @@ export function OfficeFloor({
   const attentionBlock = (
     <div className="attention">
       <h3>需要注意</h3>
-      {queue.length === 0 ? <p className="empty-attention">沒有受阻、失敗或等待中的工作</p> : (
+      {disconnected ? (
+        <div className="attention-list" data-testid="attention-disconnected">
+          <p className="empty-attention">連線中斷，無法判斷</p>
+          <p className="ledger-unclear">上次已知：受阻 {agents.filter((agent) => agent.lastKnownStatus === "blocked").length}、失敗 {agents.filter((agent) => agent.lastKnownStatus === "failed").length}、等待 {agents.filter((agent) => agent.lastKnownStatus === "waiting").length}</p>
+          <AttentionRows agents={agents.filter((agent) => agent.lastKnownStatus === "blocked" || agent.lastKnownStatus === "failed" || agent.lastKnownStatus === "waiting").map((agent) => ({ ...agent, effectiveStatus: agent.lastKnownStatus ?? "unknown" }))} now={stamp} onChoose={choose} stale />
+        </div>
+      ) : queue.length === 0 ? <p className="empty-attention">沒有受阻、失敗或等待中的工作</p> : (
         <div className="attention-list">
           <AttentionRows agents={shownQueue} now={stamp} onChoose={choose} />
           {queue.length > 4 ? (
@@ -503,7 +519,7 @@ export function OfficeFloor({
         <h3 className="ledger-label">最近變化{demo ? "（示範）" : ""}</h3>
         <ul className="change-list">
           {changes.length === 0 ? <li className="change-empty">還沒有狀態轉換</li> : changes.map((change) => (
-            <li key={change.id}><span>{clock(change.at)}</span><StatusIcon status={change.status} />{change.name} → {PREVIOUS_WORD[change.status] ?? change.status}</li>
+            <li key={change.id}><span>{clock(change.at)}</span><StatusIcon status={change.status} />{change.name} → {PREVIOUS_WORD[change.status] ?? change.status}{demo ? "（示範）" : ""}</li>
           ))}
         </ul>
         <p className={disconnected ? "ledger-foot is-down" : "ledger-foot"}>
@@ -531,7 +547,7 @@ export function OfficeFloor({
       data-link={disconnected ? "down" : "up"}
       style={{ marginTop: stageTop }}
     >
-      {tier === "bar" ? summary : null}
+      {tier === "bar" || tier === "cards" ? summary : null}
       {showScene ? (
         <div className="scene-wrap">
           <div
@@ -553,6 +569,7 @@ export function OfficeFloor({
             {manifest.seats.map((seat) => {
               const agent = bySeat.get(seat.index)
               if (!agent) return null
+              if (discussion && !reduced && discussion.scheme !== 3 && (agent.agentId === discussion.hostId || (discussion.scheme === 2 && discussion.members.includes(agent.agentId)))) return null
               return <SeatActor key={agent.agentId} agent={agent} anchor={seat.anchor} reduced={reduced} />
             })}
             {manifest.seats.map((seat) => {
@@ -574,8 +591,12 @@ export function OfficeFloor({
             {manifest.layers.filter((layer) => layer.z >= 9).map((layer) => (
               <div key={`${layer.sprite}-${layer.x}-front`} style={{ ...spriteStyle(layer.sprite, layer.x, layer.y), zIndex: layer.z }} />
             ))}
+            {discussion ? <DiscussionMarks discussion={discussion} reduced={reduced} bySeat={bySeat} /> : null}
             {manifest.seats.map((seat) => {
               const agent = bySeat.get(seat.index) ?? null
+              const talk = discussion && (agent?.agentId === discussion.hostId || discussion.members.includes(agent?.agentId ?? ""))
+                ? `討論中・與${agent?.agentId === discussion.hostId ? plateName(discussion.withName) : plateName(discussion.hostName)}`
+                : ""
               const ax = seat.anchor[0] * SCALE
               const ay = seat.anchor[1] * SCALE
               return (
@@ -589,6 +610,7 @@ export function OfficeFloor({
                   flash={agent?.agentId === flashId}
                   stamp={stamp}
                   onChoose={choose}
+                  talk={talk}
                 />
               )
             })}
@@ -609,6 +631,7 @@ export function OfficeFloor({
             return (
               <li key={seat.id}>
                 <button type="button" className={`seat-card bubble-${shown}`} data-testid={`agent-${agent.agentId}`} data-status={agent.effectiveStatus} data-freshness={agent.freshness} onClick={() => choose(agent.agentId)}>
+                  <span className={`status-bar swatch-${shown}`} />
                   <b>{plateName(agent.name)}</b>
                   <span>{bubbleCopy(agent, stamp)}{previousLine(agent) ? ` ${previousLine(agent)}` : ""}</span>
                   <span>{agent.taskTitle || "尚未回報"}</span>
@@ -624,8 +647,36 @@ export function OfficeFloor({
   )
 }
 
+function DiscussionMarks({ discussion, reduced, bySeat }: {
+  discussion: { scheme: Scheme; hostId: string; withId: string; members: string[]; topic: string; hostName: string; withName: string }
+  reduced: boolean
+  bySeat: Map<number, DeskAgent>
+}) {
+  const host = [...bySeat.values()].find((agent) => agent.agentId === discussion.hostId)
+  const other = [...bySeat.values()].find((agent) => agent.agentId === discussion.withId)
+  if (!host || !other) return null
+  const hostSeat = manifest.seats[host.seat]
+  const otherSeat = manifest.seats[other.seat]
+  const from: [number, number] = [hostSeat.anchor[0], hostSeat.anchor[1]]
+  const to: [number, number] = discussion.scheme === 2 ? [MEET[0][0], MEET[0][1]] : [otherSeat.anchor[0], otherSeat.anchor[1]]
+  const spot = reduced || discussion.scheme === 3 ? from : pointAlong(discussionPath(from, to), 0.55)
+  const look = resolveLook(host.agentId, host.name, manifest)
+  const frame = `${look}-walk-down-1`
+  const sprite = frame in manifest.sprites ? frame : `${look}-breathe-0`
+  return (
+    <>
+      {discussion.scheme !== 3 && !reduced ? <div style={{ ...spriteStyle("empty-chair", hostSeat.chair.x, hostSeat.chair.y), zIndex: 5 }} /> : null}
+      <div style={{ ...spriteStyle(sprite, spot[0] - 16, spot[1] - 42), zIndex: 6, transform: discussion.scheme === 1 ? undefined : undefined }} data-scheme={discussion.scheme} data-testid="walker" />
+      <div style={{ ...spriteStyle("dialog", spot[0] - 8, spot[1] - 64), zIndex: 7 }} />
+      <span className="walker-name" style={{ left: (spot[0] - 24) * SCALE, top: (spot[1] - 70) * SCALE }}>{plateName(host.name)}</span>
+      {discussion.scheme === 3 ? <svg className="talk-line" style={{ zIndex: 6 }} aria-hidden="true"><line x1={from[0] * SCALE} y1={(from[1] - 48) * SCALE} x2={to[0] * SCALE} y2={(to[1] - 48) * SCALE} /></svg> : null}
+      <p className="scheme-flag">方案 {discussion.scheme}（示範）{discussion.topic ? `・${discussion.topic}` : ""}</p>
+    </>
+  )
+}
+
 function SeatChrome({
-  seatId, agent, anchorX, anchorY, selected, flash, stamp, onChoose,
+  seatId, agent, anchorX, anchorY, selected, flash, stamp, onChoose, talk = "",
 }: {
   seatId: string
   agent: DeskAgent | null
@@ -635,6 +686,7 @@ function SeatChrome({
   flash: boolean
   stamp: number
   onChoose: (id: string) => void
+  talk?: string
 }) {
   const { ref, box } = useBubbleBox(anchorX)
   const shown = agent && agent.freshness === "stale" ? "unknown" : agent?.effectiveStatus
@@ -664,7 +716,7 @@ function SeatChrome({
           >
             <StatusIcon status={shown ?? "unknown"} />
             <span className="bubble-copy">
-              <span>{bubbleCopy(agent, stamp)}</span>
+              <span>{talk || bubbleCopy(agent, stamp)}</span>
               {previousLine(agent) ? <span className="bubble-sub">{previousLine(agent)}</span> : null}
             </span>
             <span className="bubble-tail" style={{ left: -box.left - 4 - (shown === "blocked" ? 3 : shown === "idle" ? 1 : 2) }} />

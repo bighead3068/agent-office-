@@ -50,6 +50,16 @@ class OfficeArtTests(unittest.TestCase):
         self.assertNotIn("crimelike", text)
         self.assertNotIn("extradave", text)
 
+    def test_windows_launcher_in_the_zip_is_utf8_with_bom(self):
+        source = (ROOT / "Start-AgentOffice.ps1").read_bytes()
+        self.assertTrue(source.startswith(b"\xef\xbb\xbf"))
+        archive = ROOT / "packaging" / "agent-office-v0.2.zip"
+        self.assertTrue(archive.is_file())
+        import zipfile
+        with zipfile.ZipFile(archive) as package:
+            payload = package.read("Start-AgentOffice.ps1")
+        self.assertTrue(payload.startswith(b"\xef\xbb\xbf"))
+
 
 if __name__ == "__main__":
     unittest.main()

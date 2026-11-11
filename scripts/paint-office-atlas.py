@@ -257,16 +257,9 @@ def status_icon(kind: str, ink: tuple[int, int, int]) -> Pix:
         img.rect(1, 7, 10, 2, ink)
         img.rect(2, 5, 8, 2, ink)
     elif kind == "failed":
-        img.p(3, 3, ink)
-        img.p(4, 4, ink)
-        img.p(5, 5, ink)
-        img.p(6, 6, ink)
-        img.p(7, 7, ink)
-        img.p(8, 8, ink)
-        img.p(8, 3, ink)
-        img.p(7, 4, ink)
-        img.p(4, 7, ink)
-        img.p(3, 8, ink)
+        for step in range(6):
+            img.p(3 + step, 3 + step, ink)
+            img.p(8 - step, 3 + step, ink)
     elif kind == "completed":
         img.p(2, 6, ink)
         img.p(3, 7, ink)
@@ -277,7 +270,8 @@ def status_icon(kind: str, ink: tuple[int, int, int]) -> Pix:
         img.p(8, 4, ink)
         img.p(9, 3, ink)
     elif kind == "unknown":
-        img.rect(5, 2, 2, 5, ink)
+        for x, y in ((4, 2), (5, 1), (6, 1), (7, 2), (7, 3), (6, 4), (5, 5), (5, 6)):
+            img.p(x, y, ink)
         img.rect(5, 9, 2, 2, ink)
     elif kind == "offline":
         img.rect(2, 2, 8, 6, ink)
@@ -785,6 +779,53 @@ def main() -> None:
                 frames.append(sprite)
             animations[name][pose] = frames
 
+    def glyph(w, h, pixels, color):
+        img = Pix(w, h)
+        for x, y in pixels:
+            img.p(x, y, color)
+        return img
+    atlas.add("swatch", glyph(16, 16, [(x, y) for x in range(8) for y in range(8)] + [(x+8, y+8) for x in range(8) for y in range(8)], TERRA[1]))
+    sw = Pix(16, 16)
+    sw.rect(0, 0, 8, 8, TERRA[1]); sw.rect(8, 0, 8, 8, GREEN[2]); sw.rect(0, 8, 8, 8, GOLD); sw.rect(8, 8, 8, 8, BLUE[1])
+    atlas.sprites["swatch"]  # placeholder replaced below
+    atlas.images[-1] = (atlas.sprites["swatch"]["x"], atlas.sprites["swatch"]["y"], sw.im)
+    check = Pix(12, 16)
+    check.rect(1, 1, 10, 14, PAPER)
+    check.p(3, 5, GREEN[1]); check.hline(5, 5, 4, INK)
+    check.p(3, 9, GREEN[1]); check.hline(5, 9, 4, INK)
+    atlas.add("checklist", check)
+    dialog = Pix(16, 12)
+    dialog.rect(1, 1, 14, 8, PAPER)
+    dialog.rect(6, 9, 3, 2, PAPER)
+    dialog.outline()
+    atlas.add("dialog", dialog)
+    dots = Pix(16, 8)
+    for x in (2, 7, 12):
+        dots.rect(x, 3, 2, 2, INK)
+    atlas.add("think-dots", dots)
+    dash = Pix(8, 8)
+    dash.hline(0, 3, 4, PAPER)
+    dash.outline()
+    atlas.add("dash-tile", dash)
+    atlas.add("empty-chair", chair())
+    for name in ("coordinator", "developer", "designer", "tester"):
+        for frame in range(4):
+            atlas.add(f"{name}-walk-down-{frame}", draw_person(LOOKS[name], "type", frame))
+            atlas.add(f"{name}-walk-left-{frame}", draw_person(LOOKS[name], "wait", frame % 4))
+        atlas.add(f"{name}-stand-back-0", draw_person(LOOKS[name], "stretch", 2))
+        atlas.add(f"{name}-talk-0", draw_person(LOOKS[name], "breathe", 0))
+        atlas.add(f"{name}-talk-1", draw_person(LOOKS[name], "breathe", 1))
+        atlas.add(f"{name}-think-0", draw_person(LOOKS[name], "blocked", 1))
+        atlas.add(f"{name}-think-1", draw_person(LOOKS[name], "blocked", 2))
+        atlas.add(f"{name}-sit-side-0", draw_person(LOOKS[name], "wait", 0))
+    manifest_frames = {
+        "walk": "look-walk-down-0..3 and look-walk-left-0..3 (right is mirrored in CSS)",
+        "standBack": "look-stand-back-0",
+        "talk": "look-talk-0..1",
+        "think": "look-think-0..1",
+        "sitSide": "look-sit-side-0",
+        "props": ["swatch", "checklist", "dialog", "think-dots", "dash-tile", "empty-chair"],
+    }
     sheet = atlas.bake()
     offenders = set()
     pixels = sheet.load()
@@ -914,14 +955,16 @@ def main() -> None:
             "eggs": ["coffee", "tend", "stretch", "nap", "pen"],
             "lookProps": {
                 "developer": [{"sprite": "monitor", "dx": 14, "dy": -18}],
-                "designer": [{"sprite": "tablet", "dx": -28, "dy": -8}],
+                "designer": [{"sprite": "swatch", "dx": -28, "dy": -8}],
                 "coordinator": [{"sprite": "prop-pens", "dx": 22, "dy": -4}],
-                "tester": [{"sprite": "prop-tape", "dx": 22, "dy": -4}],
+                "tester": [{"sprite": "checklist", "dx": 18, "dy": -10}],
             },
             "blinkEveryMs": [3000, 6000],
             "sweat": ["sweat-0", "sweat-1"],
+            "frameNotes": manifest_frames,
         },
     }
+    manifest["walkable"] = {"cols": 15, "rows": 11, "note": "1 blocks a tile. Aisles x=0,3,6,9,12 and y=6 stay open."}
     person_name = animations["coordinator"]["type"][0]
     person = atlas.sprites[person_name]
     person_img = sheet.crop((person["x"], person["y"], person["x"] + 32, person["y"] + 48))

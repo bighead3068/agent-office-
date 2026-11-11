@@ -1,4 +1,4 @@
-# Agent Office v0.2 launcher. Run this file from the folder that contains it.
+﻿# Agent Office v0.2 launcher. Run this file from the folder that contains it.
 # It does not ask for administrator rights and does not change system settings.
 param(
   [int]$Port = 8795,
@@ -20,8 +20,20 @@ function Find-Python {
   $candidates = @()
   if ($env:PYTHON) { $candidates += $env:PYTHON }
   $candidates += @("py", "python", "python3")
+  $localPython = Join-Path $env:LOCALAPPDATA "Programs\Python"
+  if (Test-Path -LiteralPath $localPython) {
+    Get-ChildItem -LiteralPath $localPython -Directory -Filter "Python3*" | Sort-Object Name -Descending | ForEach-Object {
+      $candidates += (Join-Path $_.FullName "python.exe")
+    }
+  }
   foreach ($name in $candidates) {
-    if (-not (Get-Command $name -ErrorAction SilentlyContinue)) { continue }
+    $exists = $false
+    if ($name -like "*\*" -or $name -like "*/*") {
+      $exists = Test-Path -LiteralPath $name
+    } else {
+      $exists = [bool](Get-Command $name -ErrorAction SilentlyContinue)
+    }
+    if (-not $exists) { continue }
     & $name -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"
     if ($LASTEXITCODE -eq 0) { return $name }
   }

@@ -42,6 +42,9 @@ STATUS_TYPE = {
     "completed": "task.completed",
     "failed": "task.failed",
     "progress": "task.progress",
+    "discuss-start": "discussion.started",
+    "discuss-join": "discussion.joined",
+    "discuss-end": "discussion.ended",
 }
 
 
@@ -72,25 +75,48 @@ def default_event_id(agent_id: str, job_id: str, status: str) -> str:
     return f"idem-{digest}"
 
 
-def build_body(agent_id: str, job_id: str, status: str, title: str | None, event_id: str | None, at: int | None) -> dict:
+def build_body(
+    agent_id: str,
+    job_id: str,
+    status: str,
+    title: str | None,
+    event_id: str | None,
+    at: int | None,
+    with_agent: str = "",
+    discussion_id: str = "",
+    topic: str = "",
+    outcome: str = "",
+) -> dict:
     if status not in STATUS_TYPE:
-        raise ValueError("status must be started, completed, failed, or progress")
-    if not srv.ID_RE.fullmatch(job_id):
+        raise ValueError("status must be started, completed, failed, progress, or a discuss-* status")
+    discussing = status.startswith("discuss-")
+    if not discussing and not srv.ID_RE.fullmatch(job_id):
         raise ValueError("job id is not usable")
+    if discussing and not srv.ID_RE.fullmatch(discussion_id):
+        raise ValueError("discussion id is not usable")
     if title is not None and (srv.TITLE_BAD.search(title) or not (1 <= len(title) <= srv.MAX_TITLE)):
         raise ValueError("task title must be 1 to 160 characters without control characters")
     if status == "started" and not title:
         raise ValueError("started requires a task title")
     stamp = int(time.time() * 1000) if at is None else at
     body = {
-        "eventId": event_id or default_event_id(agent_id, job_id, status),
+        "eventId": event_id or default_event_id(agent_id, discussion_id or job_id, status),
         "type": STATUS_TYPE[status],
-        "jobId": job_id,
         "at": stamp,
         "sourceId": agent_id,
         "agentId": agent_id,
     }
-    if title:
+    if discussing:
+        body["discussionId"] = discussion_id
+        if status == "discuss-start":
+            body["withAgentId"] = with_agent
+            if topic:
+                body["topic"] = topic
+        if status == "discuss-end":
+            body["outcome"] = outcome or "resume"
+    else:
+        body["jobId"] = job_id
+    if title and not discussing:
         body["taskTitle"] = title
     if not srv.ID_RE.fullmatch(body["eventId"]):
         raise ValueError("event id is not usable")
@@ -100,8 +126,12 @@ def build_body(agent_id: str, job_id: str, status: str, title: str | None, event
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Post one local bot self-report")
     parser.add_argument("--agent-id", required=True)
-    parser.add_argument("--job-id", required=True)
+    parser.add_argument("--job-id", default="")
     parser.add_argument("--status", required=True, choices=sorted(STATUS_TYPE))
+    parser.add_argument("--with", dest="with_agent", default="")
+    parser.add_argument("--discussion-id", default="")
+    parser.add_argument("--topic", default="")
+    parser.add_argument("--outcome", default="")
     parser.add_argument("--task", default="")
     parser.add_argument("--task-file", default="")
     parser.add_argument("--runtime-dir", default="")
@@ -117,7 +147,10 @@ def main(argv: list[str]) -> int:
     try:
         header = read_own_header(runtime, args.agent_id)
         url = normalize_url(args.url)
-        body = build_body(args.agent_id, args.job_id, args.status, title_value, args.event_id or None, args.at or None)
+        body = build_body(
+            args.agent_id, args.job_id, args.status, title_value, args.event_id or None, args.at or None,
+            with_agent=args.with_agent, discussion_id=args.discussion_id, topic=args.topic, outcome=args.outcome,
+        )
     except (ValueError, FileNotFoundError, OSError):
         print("report_status=0", file=sys.stderr)
         print("result=rejected", file=sys.stderr)
