@@ -51,7 +51,8 @@ describe("示範轉接器接到狀態核心", () => {
     expect(stale?.freshness).toBe("stale");
     expect(personalEgg(state, "gao")).toBe(false);
     expect(toOfficeAgent(stale!).freshness).toBe("stale");
-    expect(toOfficeAgent(stale!).status).toBe("idle");
+    expect(toOfficeAgent(stale!).status).toBe("unknown");
+    expect(toOfficeAgent(stale!).lastKnownStatus).toBe("idle");
 
     state = createScenario("opening", NOW);
     state = dispatchSim(state, "gao", "disconnect", NOW, 2).state;

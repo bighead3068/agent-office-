@@ -1,0 +1,31 @@
+{
+  "description": "Send Codex subagent lifecycle metadata to the local Agent Office dashboard on Windows.",
+  "hooks": {
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '%s\\n' '{}'",
+            "commandWindows": "pwsh.exe -NoLogo -NoProfile -NonInteractive -Command \"& (Join-Path (git rev-parse --show-toplevel) 'scripts/codex-activity-hook.ps1')\"",
+            "async": true,
+            "timeout": 6
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '%s\\n' '{}'",
+            "commandWindows": "pwsh.exe -NoLogo -NoProfile -NonInteractive -Command \"& (Join-Path (git rev-parse --show-toplevel) 'scripts/codex-activity-hook.ps1')\"",
+            "async": true,
+            "timeout": 6
+          }
+        ]
+      }
+    ]
+  }
+}

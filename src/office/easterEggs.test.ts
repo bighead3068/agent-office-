@@ -71,6 +71,9 @@ describe('isEasterEggEligible', () => {
     expect(isEasterEggEligible(agent({ id: 'a', status: 'completed', freshness: 'fresh', connected: true }))).toBe(
       false,
     )
+    expect(isEasterEggEligible(agent({ id: 'a', status: 'completed', freshness: 'fresh', connected: true }), true)).toBe(
+      false,
+    )
   })
 })
 

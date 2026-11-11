@@ -4,11 +4,29 @@
 Python 3.10 stdlib only. Reads only that agent's header file. Does not print
 the header or the token. Loopback HTTP only. This does not start a task by
 itself; the caller has to be that bot.
+
+Status semantics:
+- started: this job is working. Requires a task title. Not idle.
+- progress: same working job, optional new title. Does not finish it.
+- completed: this job finished. Stays completed until the receiver TTL; it does
+  not become idle. After the TTL the office shows unknown and keeps the result.
+- failed: this job failed. Stays failed, and is not reported as blocked.
+
+Repeating the same agent, job, and status reuses one event id, so the receiver
+dedupes it. A started report is accepted only when that job id has never been
+reported for this agent. A newer timestamp cannot bring a finished job back,
+and the current job stays put. Pass --event-id to name a different event. A
+resend with the same event id and a different title is a conflict and does not
+overwrite.
+
+If this runtime has no header for the agent, a v0.1 header directory is read.
+Old state.json files are not read. Port 8793 is not served; point --url at 8795.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -24,6 +42,9 @@ STATUS_TYPE = {
     "completed": "task.completed",
     "failed": "task.failed",
     "progress": "task.progress",
+    "discuss-start": "discussion.started",
+    "discuss-join": "discussion.joined",
+    "discuss-end": "discussion.ended",
 }
 
 
@@ -36,11 +57,11 @@ def normalize_url(url: str) -> str:
         path = "/api/self-report"
     if path not in {"/api/self-report", "/api/fixture-report"}:
         raise ValueError("url path must be the self-report endpoint")
-    return f"http://{parsed.hostname}:{parsed.port or 8793}{path}"
+    return f"http://{parsed.hostname}:{parsed.port or srv.OFFICE_PORT}{path}"
 
 
 def read_own_header(runtime: Path, agent_id: str) -> str:
-    path = srv.header_file(runtime, agent_id)
+    path = srv.find_header_file(runtime, agent_id)
     if not path.is_file():
         raise FileNotFoundError(agent_id)
     line = path.read_text(encoding="utf-8").strip()
@@ -49,25 +70,53 @@ def read_own_header(runtime: Path, agent_id: str) -> str:
     return line
 
 
-def build_body(agent_id: str, job_id: str, status: str, title: str | None, event_id: str | None, at: int | None) -> dict:
+def default_event_id(agent_id: str, job_id: str, status: str) -> str:
+    digest = hashlib.sha256(f"{agent_id}\n{job_id}\n{status}".encode("utf-8")).hexdigest()[:40]
+    return f"idem-{digest}"
+
+
+def build_body(
+    agent_id: str,
+    job_id: str,
+    status: str,
+    title: str | None,
+    event_id: str | None,
+    at: int | None,
+    with_agent: str = "",
+    discussion_id: str = "",
+    topic: str = "",
+    outcome: str = "",
+) -> dict:
     if status not in STATUS_TYPE:
-        raise ValueError("status must be started, completed, failed, or progress")
-    if not srv.ID_RE.fullmatch(job_id):
+        raise ValueError("status must be started, completed, failed, progress, or a discuss-* status")
+    discussing = status.startswith("discuss-")
+    if not discussing and not srv.ID_RE.fullmatch(job_id):
         raise ValueError("job id is not usable")
+    if discussing and not srv.ID_RE.fullmatch(discussion_id):
+        raise ValueError("discussion id is not usable")
     if title is not None and (srv.TITLE_BAD.search(title) or not (1 <= len(title) <= srv.MAX_TITLE)):
         raise ValueError("task title must be 1 to 160 characters without control characters")
     if status == "started" and not title:
         raise ValueError("started requires a task title")
     stamp = int(time.time() * 1000) if at is None else at
     body = {
-        "eventId": event_id or f"cli-{agent_id[:8]}-{status}-{stamp}",
+        "eventId": event_id or default_event_id(agent_id, discussion_id or job_id, status),
         "type": STATUS_TYPE[status],
-        "jobId": job_id,
         "at": stamp,
         "sourceId": agent_id,
         "agentId": agent_id,
     }
-    if title:
+    if discussing:
+        body["discussionId"] = discussion_id
+        if status == "discuss-start":
+            body["withAgentId"] = with_agent
+            if topic:
+                body["topic"] = topic
+        if status == "discuss-end":
+            body["outcome"] = outcome or "resume"
+    else:
+        body["jobId"] = job_id
+    if title and not discussing:
         body["taskTitle"] = title
     if not srv.ID_RE.fullmatch(body["eventId"]):
         raise ValueError("event id is not usable")
@@ -77,12 +126,16 @@ def build_body(agent_id: str, job_id: str, status: str, title: str | None, event
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Post one local bot self-report")
     parser.add_argument("--agent-id", required=True)
-    parser.add_argument("--job-id", required=True)
+    parser.add_argument("--job-id", default="")
     parser.add_argument("--status", required=True, choices=sorted(STATUS_TYPE))
+    parser.add_argument("--with", dest="with_agent", default="")
+    parser.add_argument("--discussion-id", default="")
+    parser.add_argument("--topic", default="")
+    parser.add_argument("--outcome", default="")
     parser.add_argument("--task", default="")
     parser.add_argument("--task-file", default="")
     parser.add_argument("--runtime-dir", default="")
-    parser.add_argument("--url", default="http://127.0.0.1:8793/api/self-report")
+    parser.add_argument("--url", default=f"http://127.0.0.1:{srv.OFFICE_PORT}/api/self-report")
     parser.add_argument("--event-id", default="")
     parser.add_argument("--at", type=int, default=0)
     args = parser.parse_args(argv)
@@ -94,7 +147,10 @@ def main(argv: list[str]) -> int:
     try:
         header = read_own_header(runtime, args.agent_id)
         url = normalize_url(args.url)
-        body = build_body(args.agent_id, args.job_id, args.status, title_value, args.event_id or None, args.at or None)
+        body = build_body(
+            args.agent_id, args.job_id, args.status, title_value, args.event_id or None, args.at or None,
+            with_agent=args.with_agent, discussion_id=args.discussion_id, topic=args.topic, outcome=args.outcome,
+        )
     except (ValueError, FileNotFoundError, OSError):
         print("report_status=0", file=sys.stderr)
         print("result=rejected", file=sys.stderr)

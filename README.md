@@ -1,89 +1,125 @@
-# 代理人辦公室 · Agent Office v0.1
+# 代理人辦公室 · Agent Office v0.2
 
-**SIMULATION ONLY for the demo floor.** 示範樓層沒有連接真實 Grok Bot。Real Grok Bot is **NOT** connected there.
+預設畫面是**已登記的真實 bot**。進門三秒可以分出誰在工作、誰受阻、誰做完、誰未知。示範資料只在網址加上 `?view=demo` 時出現，而且不會寫進真實接收器。
 
-另外有一個本機自報接收器。它的畫面固定寫著 **Bot自行回報・非平台原生**。那不是平台原生連線。父層 Bot 還沒用本機 Shell 送出事件之前，未知狀態不是「已經看見真實機器人」。
+這一版只有一個本機接收器，聽 `127.0.0.1:8795`。v0.1 的 `8792`、`8793`、`8794` **不再服務**，程式拒絕綁定這些埠，也不會自動改去別的埠。
 
-示範資料會一直顯示：**模擬資料・未連接真實 Agent**。
+## 狀態是什麼意思
 
-## 執行
+| 畫面上的字 | 意思 |
+| --- | --- |
+| 工作中 | 這個 bot 回報了開始或進度。 |
+| 等待中 | 明確回報正在等。 |
+| 受阻 | 明確回報被卡住。 |
+| 失敗 | 這件工作失敗。失敗不會被畫成受阻。 |
+| 已完成 | 這件工作做完，旁邊會有完成時間。完成不會自己變成閒置。 |
+| 未知 | 還沒回報，或回報已超過 TTL。未知不是閒置。 |
+| 明確閒置 | 只有對方真的送出 `task.idle` 才會出現。心跳不能證明閒置。 |
 
-需要 Node.js 20 以上。
+過期時，有效狀態變成**未知**，座位上會標**過期**，上次已知的狀態和任務標題還留著。
+
+**完成和失敗也會過期。** 規則是：`現在 - lastReportAt <= ttlMs` 仍算新鮮（剛好等於 TTL 也算新鮮）；再超過就是未知。預設 TTL 是 300 秒，所以到期前 1 秒仍是新鮮，到期後 1 秒是未知。
+
+主管摘要的五格順序固定為：卡住、進行中、等待、完成、未知。卡住＝受阻＋失敗，泡泡仍分開寫「受阻」和「失敗」。下一列是閒置與離線。這七格加總等於人數。過期與未入座是重疊標記，不重複加進總數。需要注意只列受阻 > 失敗 > 等待，不含進行中，同一狀態再依座位編號，最多 4 列。右側摘要自己不捲動。三倍尺寸只在視窗至少 1400×900 時使用。
+
+## 怎麼啟動
+
+需要 Node.js 20 以上、Python 3.10 以上。接收器只綁 `127.0.0.1`，不需要系統管理員，也不會改防火牆。
 
 ```bash
-npm install
-npm run dev
+npm ci
+npm run office
 ```
 
-開發伺服器開在 <http://127.0.0.1:43123>。
+啟動器會檢查 Python、Node、依賴和埠，建置頁面，等 `/health` 回覆，然後打開：
 
-```bash
-npm test
-npm run typecheck
-npm run build
+<http://127.0.0.1:8795/>
+
+再執行一次不會開第二個行程。它只會告訴你已經在跑，並印出網址與 runtime 路徑。權杖不會印出來。
+
+Windows 用解壓縮後那一層的 PowerShell：
+
+```powershell
+if (-not (Test-Path -LiteralPath .\receiver\self_report_server.py)) { throw "請在解壓縮後的第一層執行，不要再進一層資料夾。" }
+powershell -ExecutionPolicy Bypass -File .\Start-AgentOffice.ps1
 ```
 
-`npm run build` 產出 `dist/`。本機預覽打包結果：
+`Start-AgentOffice.ps1` 裡也有同樣的 `Test-Path`。壓縮檔的檔案就在 zip 根目錄，沒有再包一層 `agent-office/`。
+
+這份說明在 Linux 上寫過並跑過 `npm run office` 的檢查流程。**沒有在真實 Windows 上執行過 `Start-AgentOffice.ps1`。** 腳本沒有向 Windows 要管理員權限，也沒有改系統設定；若你的電腦擋了 `Start-Process` 或 Python 不在 PATH，請依錯誤訊息安裝 Python 3.10 或設定 `PYTHON`。
+
+## 怎麼加一個 bot
+
+Runtime 在 git 外面：
+
+- Windows：`%LOCALAPPDATA%\agent-office`
+- 其他系統：`$XDG_DATA_HOME/agent-office`，沒設的話是 `~/.local/share/agent-office`
+
+權杖只寫在 `headers/<agent-id>.header`，權限只給目前的使用者。註冊時只印這個檔案路徑和一條不含權杖的回報命令。
 
 ```bash
-npx serve dist
+npm run office:register -- --agent-id bot-alpha --display-name "阿法"
 ```
 
 或：
 
 ```bash
-npm run preview
+python3 receiver/register_agent.py --agent-id bot-alpha --display-name "阿法" --runtime-dir "$HOME/.local/share/agent-office"
 ```
 
-## 直接開啟單檔
+同一個 agent id 再註冊會失敗，不會悄悄換掉身分。要換權杖才加 `--rotate`，而且顯示名稱必須和原來一樣。印出的回報命令用 `python3`（Windows 用實際的 Python 路徑），路徑會加引號，工作編號和標題的位置是 `JOB_ID` 和 `TITLE`，不會用會被 shell 吃掉的 `<JOB>`。
 
-不裝依賴時，下載倉庫根目錄的 [`standalone.html`](./standalone.html)，用瀏覽器直接打開。檔案內已含腳本與樣式，不連外網，也不會連到真實 Grok Bot。
+## 從 v0.1 升級
 
-在 GitHub 打開該檔後，可用 Download 或 Raw 存到本機再打開。
+這是一次不相容的升級。8792、8793、8794 不再聽。舊的 `state.json` 不會匯入，座位從未知開始，不會被補成閒置。
 
-## 這間辦公室
+權杖可以沿用。`report_task.py` 若在新的 runtime 找不到 header，會改讀這些舊目錄裡的同一個 agent header，而且不會讀舊的 `state.json`：
 
-四位代理人，五個固定座位，第五席空著。點人，或用方向鍵、數字鍵 1–4，看手上的事、狀態與新鮮度。監督總覽只讀人數，沒有派工。
+- `%LOCALAPPDATA%\agent-office-self-report`
+- `%LOCALAPPDATA%\agent-office-multi-report`
+- `%LOCALAPPDATA%\agent-office-codex-report`
 
-可以播放模擬、切換情境，或送出工作、等待、受阻、失敗、恢復、完成、明確閒置、心跳、斷線、重新連線、資料過期。失敗和受阻、等待是不同狀態。失敗之後可以恢復，或接一件新工作。失敗不會變成閒置，也不會出現打盹。
+其他系統把 `%LOCALAPPDATA%` 換成 `~/.local/share` 或 `$XDG_DATA_HOME`。請把 `--url` 改成 `http://127.0.0.1:8795/api/self-report`。指到 8793 會連不上，結束碼是 3。
 
-人物外形跟著座位，不跟著姓名。示範人名只存在模擬資料裡。`standalone.html` 只有示範，不會讀自報。
-
-## 本機自報（不是平台連線）
-
-接收器是 Python 3.10 標準庫。預設綁 `127.0.0.1:8792`，可用參數改，但不要為此修改防火牆，也不要把它當成可以放到網際網路上的服務。瀏覽器只同源讀取，寫入權杖不會進前端。回應不送萬用字元憑證 CORS。
-
-權杖在啟動時產生，chmod 600（Windows 用 icacls 只留給目前使用者），放在執行目錄之外：
-
-- Windows：`%LOCALAPPDATA%\agent-office-self-report\token-auth.header`
-- 其他系統：`~/.local/share/agent-office-self-report/token-auth.header`
-
-不要把權杖印出來，也不要提交。允許的來源與代理人 id 只有 `5be5c071-b5bd-4ed5-ba91-5c474954d171`。呼叫端自己寫的 label 不是身分。夾具使用另一把權杖與另一個 partition，預設關閉。開始是工作中，同一個 job 的完成或失敗是不同的結束狀態。沒有回報或超過 TTL 是未知，不會補心跳，也不會推成閒置。
-
-開發機器：
+接著用它印出的命令回報。`report_task.py` 仍接受原來的參數：`--agent-id --job-id --status --task --task-file --runtime-dir --url`，輸出仍是 `report_status` 和 `result`。
 
 ```bash
+python3 receiver/report_task.py \
+  --agent-id bot-alpha \
+  --job-id job-1 \
+  --status started \
+  --task "整理文件" \
+  --runtime-dir "$HOME/.local/share/agent-office" \
+  --url http://127.0.0.1:8795/api/self-report
+```
+
+同一個 bot、同一件工作、同一個狀態再送一次會去重，不會改 `lastReportAt`。同一個 event id 但標題不同會被拒絕，不會覆寫。比較舊的時間、或舊工作的事件，也不會蓋掉較新的工作。
+
+`started` 是工作中，`completed` 是做完，`failed` 是失敗。接收器暫時沒開時，命令結束碼是 3，`result=unreachable`。
+
+Codex 活動走同一個埠的 `/api/codex-activity`。Hook 權杖在 `headers/codex-hook.header`。沒有先登記的 bot 不會自動搶座位。
+
+## 讀取資料的授權
+
+GET `/`、`/api/state`、`/api/self-report`、`/health` **沒有** bearer 權杖。這是刻意的：瀏覽器要能畫畫面，而權杖不該進前端。這只在接收器拒絕 `127.0.0.1` 以外的綁定時才成立。啟動時會印出這個警告。寫入一律要權杖，而且不看 `Origin`。回應不送跨網域 CORS。
+
+`/health` 只含版本、服務名稱和 receiver id，沒有權杖。
+
+## 示範
+
+<http://127.0.0.1:8795/?view=demo>
+
+這一頁有 DEMO 標示，用的是模擬人名，不會把事件 POST 到真實接收器。回到沒有 `view=demo` 的網址就只剩真實座位。
+
+不裝接收器時，可以打開倉庫根目錄的 [`standalone.html`](./standalone.html)。它一樣預設是真實畫面（打不開接收器就顯示連線中斷），示範仍要加 `?view=demo`。
+
+## 檢查
+
+```bash
+npm test
+npm run typecheck
 npm run build
-python3 receiver/self_report_server.py --host 127.0.0.1 --port 8792 --static-dir dist
+python3 -m unittest discover -s receiver -t receiver
 ```
 
-Windows 桌面請用壓縮檔 `packaging/agent-office-self-report-box.zip`，不要在那台機器上 clone 或改碼。說明在 `receiver/README-BOX.md`。
-
-```powershell
-cd $env:USERPROFILE\Desktop\agent-office-self-report
-powershell -ExecutionPolicy Bypass -File .\Start-AgentOffice.ps1
-```
-
-8792 上已經在跑的單來源接收器不要關，也不要覆寫它的 runtime。四個受信任來源用另一個包，埠 `127.0.0.1:8793`，runtime `%LOCALAPPDATA%\agent-office-multi-report`。說明在 `receiver/README-MULTI.md`。每個 bot 只讀自己的 header，父層不要代送。
-
-```powershell
-cd $env:USERPROFILE\Desktop\agent-office-multi-report
-powershell -ExecutionPolicy Bypass -File .\Start-MultiReport.ps1
-```
-
-舊的單來源 GET 確認：
-
-```powershell
-curl.exe -sS "http://127.0.0.1:8792/api/self-report"
-Start-Process "http://127.0.0.1:8792/?view=real"
-```
+畫面素材與授權見 [ASSETS.md](./ASSETS.md)。

@@ -20,6 +20,8 @@ export type AgentStatus = (typeof AGENT_STATUSES)[number]
 
 export type Freshness = 'fresh' | 'stale'
 
+export type DeskPresence = 'away' | 'unseated'
+
 export interface OfficeTask {
   /** Short label shown on the summary board when this agent is selected. */
   title: string
@@ -34,6 +36,8 @@ export interface OfficeAgent {
   name: string
   role: string
   status: AgentStatus
+  /** Last reported status when `status` is the effective unknown/offline view. */
+  lastKnownStatus?: AgentStatus
   task?: OfficeTask
   /**
    * `stale` overlays whatever `status` is: keep the last known cues, freeze
@@ -45,6 +49,8 @@ export interface OfficeAgent {
   lastUpdatedAt?: string
   /** False means this agent is not eligible for easter eggs. */
   connected: boolean
+  /** Show an empty chair for this agent while keeping its reported status. */
+  deskPresence?: DeskPresence
 }
 
 export const SEAT_IDS = ['S1', 'S2', 'S3', 'S4', 'S5'] as const
@@ -79,12 +85,20 @@ export const OFFICE_SCENE_TEST_DEFAULTS: OfficeSceneConfig = {
 
 export interface OfficeSceneProps {
   agents: OfficeAgent[]
+  /** List and label the statuses used by this view. Unlisted statuses keep their accessible names. */
+  statusLabels?: Partial<Record<AgentStatus, string>>
   /** Id of the agent whose seat should show the selection highlight. */
   selectedId?: string
   /** Called with the agent id when a seat is clicked, tapped, or activated with Enter/Space. */
   onSelect?: (id: string) => void
   /** Partial timing overrides. Missing fields fall back to {@link OFFICE_SCENE_TEST_DEFAULTS}. */
   config?: Partial<OfficeSceneConfig>
+  /** Enables the supervisor patrol and short, cosmetic breaks after completion. */
+  playful?: boolean
+  /** The localStorage key for this floor's seat assignments. */
+  seatStorageKey?: string
+  /** Allow incoming agents to take a vacated or finished owner's desk. */
+  rotateSeats?: boolean
   /**
    * Optional clock in ms. When set, the scene does not run its own timer.
    * Tests use this to advance easter eggs and the one-shot waiting pose.

@@ -19,6 +19,7 @@ export interface DrawModel {
   reducedMotion: boolean
   /** 0 or 1, already frozen when a seat should not loop. Ambient bits use this. */
   tick: 0 | 1
+  playful?: boolean
 }
 
 const INK = '#2b211c'
@@ -46,7 +47,7 @@ function drawIcon(
   }
 }
 
-function drawRoom(ctx: CanvasRenderingContext2D, tick: 0 | 1, reducedMotion: boolean) {
+function drawRoom(ctx: CanvasRenderingContext2D, tick: 0 | 1, reducedMotion: boolean, playful: boolean) {
   rect(ctx, 0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT, '#f6e4c8')
 
   for (let row = 0; row < 4; row += 1) {
@@ -75,7 +76,7 @@ function drawRoom(ctx: CanvasRenderingContext2D, tick: 0 | 1, reducedMotion: boo
   drawSconce(ctx, 392, 28)
   drawBookshelf(ctx, 432, 120)
   drawPantry(ctx, tick, reducedMotion)
-  drawNook(ctx, tick, reducedMotion)
+  drawNook(ctx, tick, reducedMotion, playful)
 }
 
 function drawRug(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) {
@@ -171,16 +172,18 @@ function drawPantry(ctx: CanvasRenderingContext2D, tick: 0 | 1, reducedMotion: b
   rect(ctx, 468, 218, 8, 6, '#e36b5a')
 }
 
-function drawNook(ctx: CanvasRenderingContext2D, tick: 0 | 1, reducedMotion: boolean) {
+function drawNook(ctx: CanvasRenderingContext2D, tick: 0 | 1, reducedMotion: boolean, playful: boolean) {
   drawPlant(ctx, 360, 300, 1)
-  rect(ctx, 392, 332, 28, 16, '#e7d3b0')
-  rect(ctx, 396, 328, 8, 6, '#e7d3b0')
-  rect(ctx, 408, 328, 8, 6, '#d9c09a')
-  rect(ctx, 400, 334, 2, 2, INK)
-  rect(ctx, 410, 334, 2, 2, INK)
-  rect(ctx, 404, 338, 4, 2, '#c48b7a')
-  const tail = reducedMotion ? 0 : tick
-  rect(ctx, 418, 336 - tail, 8, 3, '#e7d3b0')
+  if (!playful) {
+    rect(ctx, 392, 332, 28, 16, '#e7d3b0')
+    rect(ctx, 396, 328, 8, 6, '#e7d3b0')
+    rect(ctx, 408, 328, 8, 6, '#d9c09a')
+    rect(ctx, 400, 334, 2, 2, INK)
+    rect(ctx, 410, 334, 2, 2, INK)
+    rect(ctx, 404, 338, 4, 2, '#c48b7a')
+    const tail = reducedMotion ? 0 : tick
+    rect(ctx, 418, 336 - tail, 8, 3, '#e7d3b0')
+  }
   rect(ctx, 300, 348, 18, 22, '#6b3a24')
   rect(ctx, 304, 336, 10, 14, '#f7f4ef')
   rect(ctx, 306, 330, 6, 8, '#e7e2da')
@@ -352,7 +355,7 @@ function drawSeat(ctx: CanvasRenderingContext2D, model: DrawSeatModel) {
   const monitorX = center - 18
   const monitorY = deskY - 30
   drawMonitor(ctx, monitorX, monitorY, presentation, frame)
-  if (presentation) {
+  if (model.occupied && presentation) {
     withFilter(ctx, presentation, presentation.opacity, () => {
       drawCharacter(ctx, charX, charY, look, presentation.pose, frame, PIXEL, 'front')
     })
@@ -373,7 +376,7 @@ function drawSeat(ctx: CanvasRenderingContext2D, model: DrawSeatModel) {
 /** Paint the whole floor into a 640×384 buffer. The caller sets the transform. */
 export function drawOffice(ctx: CanvasRenderingContext2D, model: DrawModel) {
   ctx.clearRect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT)
-  drawRoom(ctx, model.tick, model.reducedMotion)
+  drawRoom(ctx, model.tick, model.reducedMotion, Boolean(model.playful))
   for (const seat of model.seats) drawSeat(ctx, seat)
   rect(ctx, 0, 0, LOGICAL_WIDTH, 2, '#4e2c1b')
   rect(ctx, 0, LOGICAL_HEIGHT - 2, LOGICAL_WIDTH, 2, '#4e2c1b')

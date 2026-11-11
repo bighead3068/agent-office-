@@ -6,8 +6,7 @@ import {
 } from './types'
 
 /**
- * Idle floor beats. They are not statuses. The scene plays one only when the
- * caller has already said the agent is idle, fresh, and connected.
+ * Cosmetic floor beats, separate from reported status.
  */
 export const EASTER_EGGS = ['coffee', 'nap', 'water'] as const
 
@@ -22,6 +21,8 @@ export interface AgentEggState {
   lastStartedAt: number | null
   /** How many eggs have started for this agent. Cycles coffee → nap → water. */
   occurrence: number
+  /** The status and task that began the current playful break. */
+  activityKey?: string
 }
 
 export function createAgentEggState(): AgentEggState {
@@ -35,15 +36,23 @@ export function createAgentEggState(): AgentEggState {
 }
 
 /**
- * Easter eggs are allowed only for an agent the caller marks as idle, fresh,
- * and connected. Completed, unknown (including a connected heartbeat with no
- * known status), stale, offline, disconnected, and every other status are
- * rejected. This function does not guess idle from timestamps or tasks.
+ * Breaks require an explicit idle agent who is present, fresh, and connected.
+ * Completed, unknown, stale, and a playful flag never count as idle.
  */
 export function isEasterEggEligible(
-  agent: Pick<OfficeAgent, 'status' | 'freshness' | 'connected'>,
+  agent: Pick<OfficeAgent, 'status' | 'freshness' | 'connected' | 'deskPresence'>,
+  playful = false,
 ): boolean {
-  return agent.status === 'idle' && agent.freshness === 'fresh' && agent.connected === true
+  void playful
+  return agent.status === 'idle' && agent.freshness === 'fresh' && agent.connected === true && !agent.deskPresence
+}
+
+function playfulDelay(id: string, occurrence: number): number {
+  let hash = 0
+  for (let index = 0; index < id.length; index += 1) {
+    hash = (Math.imul(hash, 31) + id.charCodeAt(index)) >>> 0
+  }
+  return ((hash % 2500) + occurrence * 113) % 2500
 }
 
 function clampNumber(value: number | undefined, fallback: number, min: number, max: number): number {
@@ -91,22 +100,23 @@ export function pickEgg(agentId: string, occurrence: number): EasterEggId {
 /**
  * Advance one agent's egg clock.
  *
- * - Eligibility is sampled from the agent on every call. Leaving idle, fresh,
- *   or connected clears a playing egg in that same call.
- * - The idle wait is measured from when this state machine first observes the
+ * - An ineligible status or an absent, stale, or disconnected agent clears the
+ *   break immediately. In playful mode a new task also starts a new streak.
+ * - The wait is measured from when this state machine first observes the
  *   eligible condition. There is no hidden "idle since" input.
  * - After an egg ends, the idle wait starts over, and the frequency cap blocks
  *   a new start until `easterEggFrequencyCapMs` has passed since the last start.
  * - Reduced motion never starts an egg and clears one that is already playing.
  */
 export function stepAgentEgg(
-  agent: Pick<OfficeAgent, 'id' | 'status' | 'freshness' | 'connected'>,
+  agent: Pick<OfficeAgent, 'id' | 'status' | 'freshness' | 'connected' | 'deskPresence' | 'task'>,
   prev: AgentEggState,
   now: number,
   config: OfficeSceneConfig,
   reducedMotion: boolean,
+  playful = false,
 ): AgentEggState {
-  const eligible = isEasterEggEligible(agent) && !reducedMotion
+  const eligible = isEasterEggEligible(agent, playful) && !reducedMotion
 
   if (!eligible) {
     return {
@@ -118,9 +128,13 @@ export function stepAgentEgg(
     }
   }
 
-  let eligibleSince = prev.eligibleSince ?? now
-  let activeEgg = prev.activeEgg
-  let activeStartedAt = prev.activeStartedAt
+  const activityKey = playful
+    ? JSON.stringify([agent.status, agent.task?.title, agent.task?.source, agent.task?.updatedAt])
+    : undefined
+  const sameActivity = activityKey === prev.activityKey
+  let eligibleSince = sameActivity ? (prev.eligibleSince ?? now) : now
+  let activeEgg = sameActivity ? prev.activeEgg : null
+  let activeStartedAt = sameActivity ? prev.activeStartedAt : null
   let lastStartedAt = prev.lastStartedAt
   let occurrence = prev.occurrence
 
@@ -130,10 +144,11 @@ export function stepAgentEgg(
     eligibleSince = now
   }
 
-  const waited = now - eligibleSince >= config.easterEggIdleWaitMs
+  const delay = playful ? playfulDelay(agent.id, occurrence) : 0
+  const waited = now - eligibleSince >= config.easterEggIdleWaitMs + delay
   const capOk = lastStartedAt == null || now - lastStartedAt >= config.easterEggFrequencyCapMs
 
-  if (activeEgg == null && waited && capOk) {
+  if (activeEgg == null && waited && capOk && config.easterEggDurationMs > 0) {
     activeEgg = pickEgg(agent.id, occurrence)
     activeStartedAt = now
     lastStartedAt = now
@@ -146,5 +161,6 @@ export function stepAgentEgg(
     activeStartedAt,
     lastStartedAt,
     occurrence,
+    ...(activityKey ? { activityKey } : {}),
   }
 }

@@ -49,6 +49,72 @@ describe('assignSeats', () => {
     expect(freed.seats.S2?.id).toBe('b')
     expect(freed.overflow).toEqual([])
   })
+
+  it('gives incoming agents the oldest away desk before evicting a newer owner', () => {
+    const owners = { ...emptyOwners(), S1: 'a', S2: 'b', S3: 'c', S4: 'd', S5: 'e' }
+    const people = [
+      makeAgent({ id: 'a', deskPresence: 'away', lastUpdatedAt: '2026-11-07T02:00:00Z' }),
+      makeAgent({ id: 'b', deskPresence: 'away', lastUpdatedAt: '2026-11-07T01:00:00Z' }),
+      makeAgent({ id: 'c', status: 'working' }),
+      makeAgent({ id: 'd', status: 'working' }),
+      makeAgent({ id: 'e', deskPresence: 'unseated' }),
+      makeAgent({ id: 'f', status: 'working' }),
+    ]
+    const rotated = assignSeats(people, owners, true)
+    expect(rotated.nextOwners).toEqual(owners)
+    expect(rotated.overflow.map((person) => person.id)).toEqual(['f'])
+  })
+
+  it('keeps a displaced away owner out of a later vacancy until that agent returns', () => {
+    const away = makeAgent({ id: 'a', deskPresence: 'away' })
+    const people = ['b', 'c', 'd', 'e', 'f'].map((id) => makeAgent({ id }))
+    const prior = assignSeats(people, emptyOwners(), true)
+    const after = assignSeats([away, ...people.slice(1)], prior.nextOwners, true)
+    expect(after.seats.S1?.id).toBe('a')
+    expect(after.overflow).toEqual([])
+    const returned = assignSeats([{ ...away, deskPresence: undefined }, ...people.slice(1)], after.nextOwners, true)
+    expect(returned.seats.S1?.id).toBe('a')
+  })
+
+  it('recycles the oldest terminal seat when a new working agent has no vacancy', () => {
+    const owners = { ...emptyOwners(), S1: 'a', S2: 'b', S3: 'c', S4: 'd', S5: 'e' }
+    const people = [
+      makeAgent({ id: 'a', status: 'completed', lastUpdatedAt: '2026-11-07T02:00:00Z' }),
+      makeAgent({ id: 'b', status: 'failed', lastUpdatedAt: '2026-11-07T01:00:00Z' }),
+      makeAgent({ id: 'c', status: 'working' }),
+      makeAgent({ id: 'd', status: 'waiting' }),
+      makeAgent({ id: 'e', status: 'blocked' }),
+      makeAgent({ id: 'f', status: 'working' }),
+      makeAgent({ id: 'g', status: 'working' }),
+      makeAgent({ id: 'h', status: 'working' }),
+    ]
+    const rotated = assignSeats(people, owners, true)
+    expect(rotated.nextOwners).toEqual(owners)
+    expect(rotated.overflow.map((person) => person.id)).toEqual(['f', 'g', 'h'])
+  })
+
+  it('seats a newly observed completion when there is a vacancy', () => {
+    const people = [
+      makeAgent({ id: 'a', status: 'working' }),
+      makeAgent({ id: 'b', status: 'completed', lastUpdatedAt: '2026-11-07T01:00:00Z' }),
+    ]
+    const rotated = assignSeats(people, { ...emptyOwners(), S1: 'a' }, true)
+    expect(rotated.seats.S2?.id).toBe('b')
+  })
+
+  it('only lets a fresh completion replace an older finished desk at capacity', () => {
+    const owners = { ...emptyOwners(), S1: 'a', S2: 'b', S3: 'c', S4: 'd', S5: 'e' }
+    const people = [
+      makeAgent({ id: 'a', status: 'completed', lastUpdatedAt: '2026-11-07T01:00:00Z' }),
+      ...['b', 'c', 'd', 'e'].map((id) => makeAgent({ id, status: 'working' })),
+      makeAgent({ id: 'f', status: 'completed', lastUpdatedAt: '2026-11-07T02:00:00Z' }),
+    ]
+    const rotated = assignSeats(people, owners, true)
+    expect(rotated.nextOwners).toEqual(owners)
+    expect(rotated.overflow.map((person) => person.id)).toEqual(['f'])
+    const next = assignSeats(people, rotated.nextOwners, true)
+    expect(next.nextOwners).toEqual(owners)
+  })
 })
 
 describe('computeScale', () => {

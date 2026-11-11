@@ -15,6 +15,16 @@ function buttons() {
   return screen.getAllByRole('button')
 }
 
+function withBrowserStorage() {
+  const frame = document.createElement('iframe')
+  document.body.append(frame)
+  const spy = vi.spyOn(window, 'localStorage', 'get').mockReturnValue(frame.contentWindow!.localStorage)
+  return () => {
+    spy.mockRestore()
+    frame.remove()
+  }
+}
+
 describe('OfficeScene', () => {
   it('exposes status cues, selection, and an accessible name', () => {
     const onSelect = vi.fn()
@@ -71,6 +81,165 @@ describe('OfficeScene', () => {
     expect(screen.getByRole('button', { name: /Nia/ }).getAttribute('data-status')).toBe('completed')
     expect(screen.getByRole('button', { name: /Moss/ }).getAttribute('data-seat')).toBe('S2')
     expect(screen.queryAllByRole('button')).toHaveLength(2)
+  })
+
+  it('restores seat owners after an empty loading render and scopes them to the supplied key', () => {
+    const restoreStorage = withBrowserStorage()
+    const key = 'office-scene-persisted-test'
+    const otherKey = 'office-scene-independent-test'
+    const nia = makeAgent({ id: 'nia', name: 'Nia' })
+    const moss = makeAgent({ id: 'moss', name: 'Moss' })
+    try {
+      const first = render(<OfficeScene now={0} seatStorageKey={key} agents={[nia, moss]} />)
+      first.unmount()
+
+      const restored = render(<OfficeScene now={0} seatStorageKey={key} agents={[]} />)
+      restored.rerender(<OfficeScene now={0} seatStorageKey={key} agents={[moss, nia]} />)
+      expect(screen.getByRole('button', { name: /Nia/ }).getAttribute('data-seat')).toBe('S1')
+      expect(screen.getByRole('button', { name: /Moss/ }).getAttribute('data-seat')).toBe('S2')
+
+      restored.rerender(<OfficeScene now={0} seatStorageKey={otherKey} agents={[moss, nia]} />)
+      expect(screen.getByRole('button', { name: /Moss/ }).getAttribute('data-seat')).toBe('S1')
+      expect(screen.getByRole('button', { name: /Nia/ }).getAttribute('data-seat')).toBe('S2')
+    } finally {
+      restoreStorage()
+    }
+  })
+
+  it('ignores corrupt seat storage and duplicate owners', () => {
+    const restoreStorage = withBrowserStorage()
+    const key = 'office-scene-corrupt-test'
+    const nia = makeAgent({ id: 'nia', name: 'Nia' })
+    const moss = makeAgent({ id: 'moss', name: 'Moss' })
+    try {
+      window.localStorage.setItem(key, 'invalid JSON')
+      const invalid = render(<OfficeScene now={0} seatStorageKey={key} agents={[nia, moss]} />)
+      expect(screen.getByRole('button', { name: /Nia/ }).getAttribute('data-seat')).toBe('S1')
+      invalid.unmount()
+
+      window.localStorage.setItem(key, JSON.stringify({ S2: 'nia', S3: 'nia', S5: [] }))
+      render(<OfficeScene now={0} seatStorageKey={key} agents={[nia, moss]} />)
+      expect(screen.getByRole('button', { name: /Nia/ }).getAttribute('data-seat')).toBe('S2')
+      expect(screen.getByRole('button', { name: /Moss/ }).getAttribute('data-seat')).toBe('S1')
+    } finally {
+      restoreStorage()
+    }
+  })
+
+  it('uses the in-memory assignment when the browser denies access to seat storage', () => {
+    const storage = vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => {
+      throw new DOMException('Storage denied', 'SecurityError')
+    })
+    const nia = makeAgent({ id: 'nia', name: 'Nia' })
+    const moss = makeAgent({ id: 'moss', name: 'Moss' })
+    try {
+      const props = { now: 0, seatStorageKey: 'office-scene-blocked-test' }
+      const { rerender } = render(<OfficeScene {...props} agents={[nia, moss]} />)
+      rerender(<OfficeScene {...props} agents={[moss, nia]} />)
+      expect(screen.getByRole('button', { name: /Nia/ }).getAttribute('data-seat')).toBe('S1')
+      expect(screen.getByRole('button', { name: /Moss/ }).getAttribute('data-seat')).toBe('S2')
+    } finally {
+      storage.mockRestore()
+    }
+  })
+
+  it.each([
+    ['away', '離席'],
+    ['unseated', '尚未入座'],
+  ] as const)('shows an empty, selectable chair for %s and preserves its recorded status', async (deskPresence, flag) => {
+    const user = userEvent.setup()
+    const onSelect = vi.fn()
+    const nia = makeAgent({ id: 'nia', name: 'Nia', status: 'working', deskPresence })
+    render(<OfficeScene now={0} agents={[nia]} onSelect={onSelect} />)
+    const seat = screen.getByRole('button', { name: new RegExp(`Nia.*工作中.*${flag}`) })
+    expect(within(seat).getByText(flag)).toBeTruthy()
+    expect(seat.getAttribute('data-desk-presence')).toBe(deskPresence)
+    expect(seat.getAttribute('data-seat-occupied')).toBe('false')
+    expect(seat.getAttribute('data-status')).toBe('working')
+    expect(seat.getAttribute('data-animate')).toBe('false')
+    await user.click(seat)
+    expect(onSelect).toHaveBeenCalledWith('nia')
+  })
+
+  it.each(['task change', 'away', 'disconnect', 'reduced motion'] as const)(
+    'immediately ends a playful break on %s',
+    (reason) => {
+      const sol = makeAgent({ id: 'sol', name: 'Sol', status: 'idle', task: { title: 'First task' } })
+      const props = { playful: true, config: timing, reducedMotion: false }
+      const { rerender } = render(<OfficeScene {...props} now={0} agents={[sol]} />)
+      rerender(<OfficeScene {...props} now={4000} agents={[sol]} />)
+      const seat = screen.getByRole('button', { name: /Sol.*明確閒置/ })
+      expect(within(seat).getByText('偷懶中')).toBeTruthy()
+      expect(seat.getAttribute('data-pose')).toBe('nap')
+      expect(seat.getAttribute('data-status')).toBe('idle')
+      expect(screen.getByRole('region', { name: '座位概況' }).querySelector('[data-count="idle"]')?.textContent)
+        .toBe('明確閒置1')
+
+      const updated: OfficeAgent = { ...sol }
+      if (reason === 'task change') updated.task = { title: 'Next task' }
+      if (reason === 'away') updated.deskPresence = 'away'
+      if (reason === 'disconnect') updated.connected = false
+      rerender(<OfficeScene {...props} reducedMotion={reason === 'reduced motion'} now={4000} agents={[updated]} />)
+      expect(within(seat).queryByText('偷懶中')).toBeNull()
+      expect(seat.getAttribute('data-egg')).toBe('')
+    },
+  )
+
+  it('offers a stationary, keyboard-accessible cat summary in reduced-motion mode', async () => {
+    const user = userEvent.setup()
+    const props = {
+      playful: true,
+      reducedMotion: true,
+      agents: [makeAgent({ id: 'nia', name: 'Nia', status: 'working' })],
+    }
+    const { rerender } = render(<OfficeScene {...props} now={0} />)
+    const cat = screen.getByRole('button', { name: /貓咪主管/ })
+    const initialPosition = cat.getAttribute('style')
+    rerender(<OfficeScene {...props} now={8000} />)
+    expect(cat.getAttribute('style')).toBe(initialPosition)
+    await user.tab()
+    await user.tab()
+    expect(document.activeElement).toBe(cat)
+    await user.keyboard('{Enter}')
+    expect(cat.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByRole('region', { name: '貓咪主管巡查報告' }).textContent).toContain('工作中 1')
+    await user.keyboard('{Escape}')
+    expect(cat.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('patrols the floor in playful mode when motion is allowed', () => {
+    const { rerender } = render(<OfficeScene playful now={0} agents={[]} />)
+    const cat = screen.getByRole('button', { name: /貓咪主管/ })
+    const initialPosition = cat.getAttribute('style')
+    rerender(<OfficeScene playful now={8000} agents={[]} />)
+    expect(cat.getAttribute('style')).not.toBe(initialPosition)
+  })
+
+  it('has an agent hide a playful break as the supervisor walks past', () => {
+    const props = {
+      playful: true,
+      config: timing,
+      agents: [makeAgent({ id: 'sol', name: 'Sol', status: 'idle' })],
+    }
+    const { rerender } = render(<OfficeScene {...props} now={0} />)
+    rerender(<OfficeScene {...props} now={10_000} />)
+    const seat = screen.getByRole('button', { name: /Sol.*明確閒置/ })
+    expect(within(seat).getByText('偷懶中')).toBeTruthy()
+    rerender(<OfficeScene {...props} now={12_400} />)
+    expect(within(seat).getByText('假裝在忙')).toBeTruthy()
+    expect(seat.getAttribute('data-pose')).toBe('breathe')
+  })
+
+  it('does not give a new agent a finished owner\'s desk', () => {
+    const sol = makeAgent({ id: 'sol', name: 'Sol', status: 'completed' })
+    const others = ['a', 'b', 'c', 'd'].map((id) => makeAgent({ id, status: 'working' }))
+    const incoming = makeAgent({ id: 'incoming', name: 'Incoming', status: 'working' })
+    const props = { playful: true, rotateSeats: true, config: timing }
+    const { rerender } = render(<OfficeScene {...props} now={0} agents={[sol, ...others]} />)
+    const seat = screen.getByRole('button', { name: /Sol/ }).getAttribute('data-seat')
+    rerender(<OfficeScene {...props} now={1} agents={[sol, ...others, incoming]} />)
+    expect(screen.getByRole('button', { name: /Sol/ }).getAttribute('data-seat')).toBe(seat)
+    expect(screen.queryByRole('button', { name: /Incoming/ })).toBeNull()
   })
 
   it('renders stale as frozen last-known cues and offline as a dimmed, clickable desk', async () => {
