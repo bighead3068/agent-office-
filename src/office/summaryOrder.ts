@@ -165,16 +165,24 @@ export function attentionAgents<T extends Pick<DeskAgent, "effectiveStatus" | "s
     )
 }
 
+/** Reports are milliseconds. A unix-seconds value is scaled up when `now` is in milliseconds. */
+export function eventMillis(at: number, now: number): number {
+  if (at > 0 && at < 1e11 && now > 1e11) return Math.round(at * 1000)
+  return at
+}
+
 export function elapsedLabel(at: number | null, now: number): string {
   if (at == null || !Number.isFinite(at) || !Number.isFinite(now)) return ""
-  const delta = now - at
-  if (delta < 0) return ""
+  const delta = now - eventMillis(at, now)
+  if (delta < 0) return delta > -120_000 ? "剛剛" : ""
   const minutes = Math.floor(delta / 60_000)
   if (minutes < 1) return "剛剛"
   if (minutes < 60) return `${minutes}分前`
   const hours = Math.floor(minutes / 60)
   if (hours < 48) return `${hours}小時前`
-  return `${Math.floor(hours / 24)}天前`
+  const days = Math.floor(hours / 24)
+  if (days < 14) return `${days}天前`
+  return `${Math.floor(days / 7)}週前`
 }
 
 export function shortName(name: string, max = 8): string {

@@ -8,6 +8,7 @@ import {
   STATUS_LABEL,
   attentionQueue,
   elapsedLabel,
+  eventMillis,
   ledgerTotals,
   plateName,
   type DeskAgent,
@@ -205,7 +206,7 @@ function previousLine(agent: DeskAgent): string | null {
 
 function staleMinutes(agent: DeskAgent, now: number): number | null {
   if (agent.freshness !== "stale" || agent.lastReportAt == null) return null
-  const minutes = Math.floor((now - agent.lastReportAt) / 60_000)
+  const minutes = Math.floor((now - eventMillis(agent.lastReportAt, now)) / 60_000)
   return minutes >= 1 ? minutes : null
 }
 
@@ -300,7 +301,16 @@ function SeatActor({ agent, anchor, reduced }: { agent: DeskAgent; anchor: reado
   )
 }
 
-function AttentionRows({ agents, onChoose }: { agents: readonly DeskAgent[]; onChoose: (id: string) => void }) {
+function seedDemoChanges(agents: readonly DeskAgent[], now: number): Change[] {
+  return agents.slice(0, 4).map((agent, index) => ({
+    id: `demo-seed-${agent.agentId}`,
+    at: now - (index + 1) * 4 * 60_000,
+    name: plateName(agent.name),
+    status: agent.effectiveStatus,
+  }))
+}
+
+function AttentionRows({ agents, now, onChoose }: { agents: readonly DeskAgent[]; now: number; onChoose: (id: string) => void }) {
   return (
     <>
       {agents.map((agent) => (
@@ -309,7 +319,7 @@ function AttentionRows({ agents, onChoose }: { agents: readonly DeskAgent[]; onC
           <b>{plateName(agent.name)}</b>
           <span className="seat-code">{manifest.seats[agent.seat]?.id ?? ""}</span>
           <span className="ledger-task">{agent.taskTitle || "尚未回報"}</span>
-          <em>{elapsedLabel(agent.lastReportAt, Date.now())}</em>
+          <em>{elapsedLabel(agent.lastReportAt, now)}</em>
         </button>
       ))}
     </>
@@ -341,7 +351,7 @@ export function OfficeFloor({
   const [menu, setMenu] = useState(menuOpen)
   const [page, setPage] = useState(0)
   const [flashId, setFlashId] = useState("")
-  const [changes, setChanges] = useState<Change[]>([])
+  const [changes, setChanges] = useState<Change[]>(() => (demo ? seedDemoChanges(agents, now ?? Date.now()) : []))
   const previous = useRef(new Map<string, string>())
   const stamp = now ?? Date.now()
   const queue = attentionQueue(agents)
@@ -456,7 +466,7 @@ export function OfficeFloor({
       <h3>需要注意</h3>
       {queue.length === 0 ? <p className="empty-attention">沒有受阻、失敗或等待中的工作</p> : (
         <div className="attention-list">
-          <AttentionRows agents={shownQueue} onChoose={choose} />
+          <AttentionRows agents={shownQueue} now={stamp} onChoose={choose} />
           {queue.length > 4 ? (
             <button type="button" className="ledger-row more-row" data-testid="attention-more" onClick={() => setPage((value) => (hiddenCount > 0 ? value + 1 : 0))}>
               ＋{hiddenCount > 0 ? hiddenCount : queue.length} 項，點一下跳到下一個
@@ -585,7 +595,7 @@ export function OfficeFloor({
             {selected && selectedSeat ? <DetailCard agent={selected} stamp={stamp} demo={demo} sourceLabel={sourceLabel} left={cardLeft} top={cardTop} /> : null}
             {tier === "bar" && menu ? (
               <div className="ledger-menu" data-testid="attention-menu">
-                {queue.length === 0 ? <p className="empty-attention">沒有受阻、失敗或等待中的工作</p> : <AttentionRows agents={queue.slice(0, 4)} onChoose={choose} />}
+                {queue.length === 0 ? <p className="empty-attention">沒有受阻、失敗或等待中的工作</p> : <AttentionRows agents={queue.slice(0, 4)} now={stamp} onChoose={choose} />}
               </div>
             ) : null}
           </div>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { attentionAgents, attentionQueue, ledgerTotals, plateName, shortName, sortDesks, tallyDesks, type DeskAgent } from "./summaryOrder"
+import { attentionAgents, attentionQueue, elapsedLabel, ledgerTotals, plateName, shortName, sortDesks, tallyDesks, type DeskAgent } from "./summaryOrder"
 
 function desk(partial: Partial<DeskAgent> & Pick<DeskAgent, "agentId" | "effectiveStatus" | "seat">): DeskAgent {
   return {
@@ -76,6 +76,17 @@ describe("supervisor sort", () => {
     expect(totals.blocked).toBe(2)
     expect(totals.failed).toBe(1)
     expect(totals.working).toBe(1)
+  })
+
+  it("formats recent reports in minutes and accepts unix seconds", () => {
+    const now = 1_800_000_000_000
+    expect(elapsedLabel(now - 30_000, now)).toBe("剛剛")
+    expect(elapsedLabel(now - 5 * 60_000, now)).toBe("5分前")
+    expect(elapsedLabel(now - 3 * 3_600_000, now)).toBe("3小時前")
+    expect(elapsedLabel(now - 3 * 86_400_000, now)).toBe("3天前")
+    expect(elapsedLabel(now / 1000 - 120, now)).toBe("2分前")
+    expect(elapsedLabel(now + 30_000, now)).toBe("剛剛")
+    expect(elapsedLabel(now - 40 * 86_400_000, now)).toBe("5週前")
   })
 
   it("shortens name plates without dropping the full name contract", () => {

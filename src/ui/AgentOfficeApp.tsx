@@ -75,16 +75,19 @@ const SIM_ACTIONS: { id: SimAction; label: string }[] = [
   { id: "expire", label: "資料過期" },
 ]
 
-const BOARD: DeskAgent[] = [
-  { agentId: "5be5c071-coord", name: "Agent Office 協調", seat: 0, effectiveStatus: "working", lastKnownStatus: "working", freshness: "fresh", taskTitle: "排今天的會議並且把每個人的下一件事寫成一行很長的標題", terminalAt: null, lastReportAt: 1_700_000_000_000, reason: "report" },
-  { agentId: "7a961a88-dev", name: "Agent Office 開發", seat: 1, effectiveStatus: "waiting", lastKnownStatus: "waiting", freshness: "fresh", taskTitle: "等編譯結果，這行也刻意寫得很長以免相鄰座位的任務條疊在一起", terminalAt: null, lastReportAt: 1_700_000_000_000, reason: "report" },
-  { agentId: "892250dc-des", name: "Agent Office 設計", seat: 2, effectiveStatus: "blocked", lastKnownStatus: "blocked", freshness: "fresh", taskTitle: "等色票", terminalAt: null, lastReportAt: 1_699_000_000_000, reason: "report" },
-  { agentId: "cf8d7f4a-qa", name: "測試助手", seat: 3, effectiveStatus: "failed", lastKnownStatus: "failed", freshness: "fresh", taskTitle: "測試紅了", terminalAt: 1_700_000_000_000, lastReportAt: 1_700_000_000_000, reason: "report" },
-  { agentId: "done", name: "完工", seat: 4, effectiveStatus: "completed", lastKnownStatus: "completed", freshness: "fresh", taskTitle: "交卷", terminalAt: 1_699_999_000_000, lastReportAt: 1_699_999_000_000, reason: "report" },
-  { agentId: "miss", name: "過期席", seat: 5, effectiveStatus: "unknown", lastKnownStatus: "completed", freshness: "stale", taskTitle: "上次的交卷", terminalAt: 1_699_994_000_000, lastReportAt: 1_699_994_000_000, reason: "ttl" },
-  { agentId: "off", name: "離線", seat: 6, effectiveStatus: "offline", lastKnownStatus: "offline", freshness: "fresh", taskTitle: "不在座位", terminalAt: null, lastReportAt: 1_699_990_000_000, reason: "disconnect", disconnected: true },
-  { agentId: "nap", name: "閒置", seat: 7, effectiveStatus: "idle", lastKnownStatus: "idle", freshness: "fresh", taskTitle: "明確閒置", terminalAt: null, lastReportAt: 1_700_000_000_000, reason: "report" },
-]
+function boardAgents(now: number): DeskAgent[] {
+  const at = (minutes: number) => now - minutes * 60_000
+  return [
+    { agentId: "5be5c071-coord", name: "Agent Office 協調", seat: 0, effectiveStatus: "working", lastKnownStatus: "working", freshness: "fresh", taskTitle: "排今天的會議並且把每個人的下一件事寫成一行很長的標題", terminalAt: null, lastReportAt: at(2), reason: "report" },
+    { agentId: "7a961a88-dev", name: "Agent Office 開發", seat: 1, effectiveStatus: "waiting", lastKnownStatus: "waiting", freshness: "fresh", taskTitle: "等編譯結果，這行也刻意寫得很長以免相鄰座位的任務條疊在一起", terminalAt: null, lastReportAt: at(6), reason: "report" },
+    { agentId: "892250dc-des", name: "Agent Office 設計", seat: 2, effectiveStatus: "blocked", lastKnownStatus: "blocked", freshness: "fresh", taskTitle: "等色票", terminalAt: null, lastReportAt: at(18), reason: "report" },
+    { agentId: "cf8d7f4a-qa", name: "測試助手", seat: 3, effectiveStatus: "failed", lastKnownStatus: "failed", freshness: "fresh", taskTitle: "測試紅了", terminalAt: at(12), lastReportAt: at(12), reason: "report" },
+    { agentId: "done", name: "完工", seat: 4, effectiveStatus: "completed", lastKnownStatus: "completed", freshness: "fresh", taskTitle: "交卷", terminalAt: at(9), lastReportAt: at(9), reason: "report" },
+    { agentId: "miss", name: "過期席", seat: 5, effectiveStatus: "unknown", lastKnownStatus: "completed", freshness: "stale", taskTitle: "上次的交卷", terminalAt: at(20), lastReportAt: at(20), reason: "ttl" },
+    { agentId: "off", name: "離線", seat: 6, effectiveStatus: "offline", lastKnownStatus: "offline", freshness: "fresh", taskTitle: "不在座位", terminalAt: null, lastReportAt: at(8), reason: "disconnect", disconnected: true },
+    { agentId: "nap", name: "閒置", seat: 7, effectiveStatus: "idle", lastKnownStatus: "idle", freshness: "fresh", taskTitle: "明確閒置", terminalAt: null, lastReportAt: at(3), reason: "report" },
+  ]
+}
 
 function DemoOffice() {
   const search = useSearch()
@@ -123,9 +126,9 @@ function DemoOffice() {
       </header>
       <p className="sr-only">看泡泡就知道誰在做事、誰卡住、誰做完、誰未知。這頁是模擬。</p>
       {cast === "board"
-        ? <OfficeFloor agents={BOARD} selectedId={selectedId} onSelect={setSelectedId} demo sourceLabel="模擬" now={1_700_000_000_000} disconnected={linkDown} menuOpen={openMenu} />
+        ? <OfficeFloor agents={boardAgents(Date.now())} selectedId={selectedId} onSelect={setSelectedId} demo sourceLabel="模擬" disconnected={linkDown} menuOpen={openMenu} />
         : cast === "clear"
-          ? <OfficeFloor agents={BOARD.map((agent) => ({ ...agent, effectiveStatus: "working", lastKnownStatus: "working", freshness: "fresh" }))} selectedId={selectedId} onSelect={setSelectedId} demo now={1_700_000_000_000} />
+          ? <OfficeFloor agents={boardAgents(Date.now()).map((agent) => ({ ...agent, effectiveStatus: "working", lastKnownStatus: "working", freshness: "fresh" }))} selectedId={selectedId} onSelect={setSelectedId} demo />
         : <OfficeFloor agents={agents} selectedId={selectedId} onSelect={setSelectedId} demo sourceLabel="模擬" />}
       {cast === "board" ? null : (
       <details className="sim" data-testid="sim-panel">
