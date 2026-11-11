@@ -67,7 +67,19 @@ npm run office:register -- --agent-id bot-alpha --display-name "阿法"
 python3 receiver/register_agent.py --agent-id bot-alpha --display-name "阿法" --runtime-dir "$HOME/.local/share/agent-office"
 ```
 
-同一個 agent id 再註冊會失敗，不會悄悄換掉身分。要換權杖才加 `--rotate`，而且顯示名稱必須和原來一樣。
+同一個 agent id 再註冊會失敗，不會悄悄換掉身分。要換權杖才加 `--rotate`，而且顯示名稱必須和原來一樣。印出的回報命令用 `python3`（Windows 用實際的 Python 路徑），路徑會加引號，工作編號和標題的位置是 `JOB_ID` 和 `TITLE`，不會用會被 shell 吃掉的 `<JOB>`。
+
+## 從 v0.1 升級
+
+這是一次不相容的升級。8792、8793、8794 不再聽。舊的 `state.json` 不會匯入，座位從未知開始，不會被補成閒置。
+
+權杖可以沿用。`report_task.py` 若在新的 runtime 找不到 header，會改讀這些舊目錄裡的同一個 agent header，而且不會讀舊的 `state.json`：
+
+- `%LOCALAPPDATA%\agent-office-self-report`
+- `%LOCALAPPDATA%\agent-office-multi-report`
+- `%LOCALAPPDATA%\agent-office-codex-report`
+
+其他系統把 `%LOCALAPPDATA%` 換成 `~/.local/share` 或 `$XDG_DATA_HOME`。請把 `--url` 改成 `http://127.0.0.1:8795/api/self-report`。指到 8793 會連不上，結束碼是 3。
 
 接著用它印出的命令回報。`report_task.py` 仍接受原來的參數：`--agent-id --job-id --status --task --task-file --runtime-dir --url`，輸出仍是 `report_status` 和 `result`。
 

@@ -125,7 +125,10 @@ describe("v0.2 office", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
     expect(screen.getByTestId("live-note")).toHaveTextContent("連線中斷")
     expect(screen.getByTestId("live-note")).toHaveTextContent("上次已知")
-    expect(screen.getByTestId("agent-bot-a")).toHaveTextContent("還在做")
+    const seat = screen.getByTestId("agent-bot-a")
+    expect(seat).toHaveAttribute("data-status", "unknown")
+    expect(seat).toHaveTextContent("還在做")
+    expect(seat).toHaveTextContent("上次：工作中")
   })
 
   it("keeps the summary readable without an inner scroller", () => {

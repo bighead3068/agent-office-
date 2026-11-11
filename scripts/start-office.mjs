@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto"
 import { execFileSync, spawn } from "node:child_process"
-import { existsSync } from "node:fs"
+import { existsSync, realpathSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
@@ -67,11 +68,22 @@ function openBrowser(url) {
   }
 }
 
+function runtimeMarker(runtime) {
+  let text = path.resolve(runtime)
+  try {
+    text = realpathSync(runtime)
+  } catch {
+    // The directory may not exist until the receiver creates it.
+  }
+  return createHash("sha256").update(text).digest("hex").slice(0, 16)
+}
+
 function report(runtime, already) {
   console.log(already ? "already_running=yes" : "already_running=no")
   console.log(`ui=http://${host}:${port}/`)
+  console.log(`runtime_dir=${runtime}`)
+  console.log(`runtime_marker=${runtimeMarker(runtime)}`)
   if (already) console.log("note=did not start a second process")
-  else console.log(`runtime_dir=${runtime}`)
   console.log("token_not_printed=yes")
   console.log("get_auth=loopback-only-no-token")
 }
@@ -80,6 +92,11 @@ preflight()
 const runtime = runtimeDir()
 const current = await health()
 if (current?.ok === true && current.service === "agent-office") {
+  const marker = runtimeMarker(runtime)
+  if (!current.runtimeMarker || current.runtimeMarker !== marker) {
+    console.log(`runtime_dir=${runtime}`)
+    fail("已在跑的接收器使用另一個 runtime。沒有啟動第二個行程。")
+  }
   report(runtime, true)
   openBrowser(`http://${host}:${port}/`)
   process.exit(0)

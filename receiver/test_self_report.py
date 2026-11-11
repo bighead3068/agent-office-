@@ -5,6 +5,7 @@ import os
 import stat
 import subprocess
 import sys
+from unittest import mock
 import tempfile
 import threading
 import unittest
@@ -195,6 +196,47 @@ class StoreTests(unittest.TestCase):
         token = (self.runtime / "headers" / f"{A}.header").read_text(encoding="utf-8").split()[-1]
         self.assertNotIn(token.encode(), disk)
 
+    def test_completed_job_can_start_again_with_the_same_idempotency_key(self):
+        started = self.accept(body(event_id="idem-start", at=NOW), now=NOW)
+        self.assertEqual(started["status"], 200)
+        done = self.accept(body(kind="task.completed", event_id="idem-done", at=NOW + 5), now=NOW + 5)
+        self.assertEqual(done["status"], 200)
+        retry = self.accept(body(event_id="idem-start", at=NOW + 1), now=NOW + 6)
+        self.assertEqual(retry["status"], 409)
+        reopened = self.accept(body(event_id="idem-start", at=NOW + 10), now=NOW + 10)
+        self.assertEqual(reopened["status"], 200)
+        self.assertFalse(reopened["deduped"])
+        view = self.store.project(NOW + 11, 300_000)
+        self.assertEqual(view["agents"][0]["effectiveStatus"], "working")
+        self.assertEqual(view["agents"][0]["taskTitle"], "核對座位")
+
+    def test_report_command_is_pasteable(self):
+        command = srv.report_command("bot-a", Path("/tmp/my dir"), "http://127.0.0.1:8795/api/self-report")
+        self.assertNotIn("<", command)
+        self.assertNotIn(">", command)
+        self.assertIn("JOB_ID", command)
+        self.assertIn("TITLE", command)
+        self.assertIn("python3", command)
+        self.assertIn("'/tmp/my dir'", command)
+
+    def test_legacy_header_is_read_without_old_state(self):
+        legacy = self.runtime / "legacy" / "agent-office-multi-report"
+        srv.write_private(srv.header_file(legacy, "bot-old"), "Authorization: Bearer legacy-token-value\n")
+        (legacy / "state.json").write_text('{"phase": "idle"}', encoding="utf-8")
+        with mock.patch.object(srv, "legacy_runtime_dirs", return_value=[legacy]):
+            line = report_task.read_own_header(self.runtime / "fresh-runtime", "bot-old")
+        self.assertIn("legacy-token-value", line)
+        self.assertFalse((self.runtime / "fresh-runtime" / "state.json").exists())
+
+    def test_windows_icacls_failure_does_not_leave_a_header(self):
+        fake = subprocess.CompletedProcess(args=["icacls"], returncode=1, stdout="", stderr="denied")
+        with mock.patch.dict(os.environ, {"USERNAME": "tester", "USERDOMAIN": "DESK"}):
+            with mock.patch.object(srv.os, "name", "nt"):
+                with mock.patch("subprocess.run", return_value=fake):
+                    with self.assertRaises(OSError):
+                        srv.issue_header(self.runtime, "bot-locked")
+        self.assertFalse((self.runtime / "headers" / "bot-locked.header").exists())
+
 
 class HttpTests(unittest.TestCase):
     def setUp(self):
@@ -242,6 +284,8 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(health["service"], "agent-office")
         self.assertTrue(health["receiverId"])
         self.assertEqual(health["getAuth"], "loopback-only")
+        self.assertEqual(len(health["runtimeMarker"]), 16)
+        self.assertNotIn(str(self.runtime), raw.decode())
         self.assertNotIn("Bearer", raw.decode())
         self.assertNotIn(self.token(A), raw.decode())
         state_status, state_headers, state_raw = self.request("GET", "/api/state")
@@ -350,6 +394,20 @@ class HttpTests(unittest.TestCase):
         restarted = srv.App(self.runtime, 300_000, False, None)
         restored = restarted.activity.snapshot()
         self.assertEqual(restored["sessions"][0]["agents"][0]["agentId"], "worker-1")
+
+    def test_hook_token_cannot_change_another_agents_seat(self):
+        status, _, raw = self.request(
+            "POST",
+            ACTIVITY,
+            token=self.token(srv.CODEX_HOOK_SOURCE),
+            payload=activity(agent=B, jobId="job-x", taskTitle="被冒充"),
+        )
+        self.assertEqual(status, 200, raw)
+        state = json.loads(self.request("GET", "/api/state")[2])
+        beta = next(item for item in state["agents"] if item["agentId"] == B)
+        self.assertEqual(beta["effectiveStatus"], "unknown")
+        self.assertIsNone(beta["taskTitle"])
+        self.assertEqual(beta["name"], "貝塔")
 
 
 class CliTests(unittest.TestCase):

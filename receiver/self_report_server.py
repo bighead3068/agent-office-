@@ -117,15 +117,17 @@ def restrict(path: Path) -> None:
         domain = os.environ.get("USERDOMAIN") or ""
         account = f"{domain}\\{user}" if domain and user else user
         if not account:
-            return
+            raise OSError("Windows user is unknown; refusing to leave a credential file unrestricted")
         import subprocess
 
-        subprocess.run(
+        result = subprocess.run(
             ["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:(F)"],
             check=False,
             capture_output=True,
             text=True,
         )
+        if result.returncode != 0:
+            raise OSError("icacls failed to restrict the credential file")
         return
     os.chmod(path, 0o600 if path.is_file() else 0o700)
 
@@ -134,10 +136,15 @@ def write_private(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     restrict(path.parent)
     temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(text, encoding="utf-8", newline="\n")
-    restrict(temporary)
-    os.replace(temporary, path)
-    restrict(path)
+    try:
+        temporary.write_text(text, encoding="utf-8", newline="\n")
+        restrict(temporary)
+        os.replace(temporary, path)
+        restrict(path)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
+        raise
 
 
 def header_file(runtime: Path, agent_id: str) -> Path:
@@ -210,16 +217,61 @@ def ensure_register_key(runtime: Path) -> str:
     return key
 
 
+def shell_quote(value: str, powershell: bool) -> str:
+    text = str(value)
+    if powershell:
+        return "'" + text.replace("'", "''") + "'"
+    return "'" + text.replace("'", "'\"'\"'") + "'"
+
+
 def report_command(agent_id: str, runtime: Path, url: str) -> str:
-    return (
-        "python receiver/report_task.py"
-        f" --agent-id {agent_id}"
-        " --job-id <JOB>"
-        " --status started"
-        ' --task "<TITLE>"'
-        f" --runtime-dir {runtime}"
-        f" --url {url}"
-    )
+    """A command the current OS can paste. Placeholders are JOB_ID and TITLE, not shell redirects."""
+    powershell = os.name == "nt"
+    program = sys.executable if powershell else "python3"
+    parts = [
+        shell_quote(program, powershell),
+        shell_quote("receiver/report_task.py", powershell),
+        "--agent-id",
+        shell_quote(agent_id, powershell),
+        "--job-id",
+        "JOB_ID",
+        "--status",
+        "started",
+        "--task",
+        "TITLE",
+        "--runtime-dir",
+        shell_quote(str(runtime), powershell),
+        "--url",
+        shell_quote(url, powershell),
+    ]
+    return " ".join(parts)
+
+
+def runtime_marker(runtime: Path) -> str:
+    try:
+        text = str(runtime.resolve())
+    except OSError:
+        text = str(runtime.absolute())
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def legacy_runtime_dirs() -> list[Path]:
+    return [default_runtime_dir().with_name(name) for name in sorted(LEGACY_RUNTIME_NAMES)]
+
+
+def find_header_file(runtime: Path, agent_id: str, legacy_dirs: Optional[list[Path]] = None) -> Path:
+    """Prefer this runtime's header. Otherwise read a v0.1 header file. Never reads state.json."""
+    primary = header_file(runtime, agent_id)
+    if primary.is_file():
+        return primary
+    for directory in legacy_runtime_dirs() if legacy_dirs is None else legacy_dirs:
+        try:
+            candidate = header_file(directory, agent_id)
+        except ValueError:
+            continue
+        if candidate.is_file():
+            return candidate
+    return primary
 
 
 def legacy_runtime(path: Path) -> bool:
@@ -319,7 +371,7 @@ def decide(state: Optional[dict], event: dict) -> dict:
     if not same_job and kind != "task.started":
         return {"ok": False, "error": "stale_job"}
     if kind == "task.started":
-        if same_job and phase in {"working", "completed", "failed"}:
+        if same_job and phase == "working":
             return {"ok": False, "error": "out_of_order"}
         return {"ok": True}
     if kind == "task.progress":
@@ -451,13 +503,23 @@ class OfficeStore:
                     "SELECT payload_hash FROM events WHERE event_id = ?",
                     (event["eventId"],),
                 ).fetchone()
-                if existing is not None:
-                    db.execute("ROLLBACK")
-                    if existing["payload_hash"] == digest:
-                        return 200, {"ok": True, "deduped": True}
-                    return 409, {"ok": False, "error": "event_id_conflict"}
                 state_row = db.execute("SELECT * FROM agent_state WHERE agent_id = ?", (bound_id,)).fetchone()
                 state = dict(state_row) if state_row is not None else None
+                if existing is not None:
+                    if existing["payload_hash"] != digest:
+                        db.execute("ROLLBACK")
+                        return 409, {"ok": False, "error": "event_id_conflict"}
+                    reopen = (
+                        event["type"] == "task.started"
+                        and state is not None
+                        and state["phase"] in {"completed", "failed"}
+                        and state["job_id"] == event["jobId"]
+                    )
+                    if not reopen:
+                        db.execute("ROLLBACK")
+                        return 200, {"ok": True, "deduped": True}
+                    suffix = hashlib.sha256(f"{event['eventId']}\n{state['last_event_id']}".encode()).hexdigest()[:8]
+                    event = {**event, "eventId": f"{event['eventId'][:71]}-{suffix}"}
                 decision = decide(state, event)
                 if not decision["ok"]:
                     db.execute("ROLLBACK")
@@ -693,6 +755,7 @@ class App:
         self.activity = ActivityStore(activity_path)
         restrict(activity_path)
         self.activity_token = ensure_header(runtime, CODEX_HOOK_SOURCE)
+        self.runtime_marker = runtime_marker(runtime)
 
     def classify(self, token: str) -> Optional[str]:
         return match_token(self.runtime, token)
@@ -751,6 +814,7 @@ def make_handler(app: App):
                         "codexActivity": True,
                         "getAuth": "loopback-only",
                         "bind": "127.0.0.1",
+                        "runtimeMarker": app.runtime_marker,
                     },
                 )
                 return
@@ -810,7 +874,13 @@ def make_handler(app: App):
                     self._send(403, {"ok": False, "error": "demo_rejected"})
                     return
                 status, payload = app.activity.accept(body, now_ms())
-                if status == 200 and isinstance(body, dict) and body.get("jobId") and body.get("kind") in {"started", "completed", "failed"}:
+                if (
+                    status == 200
+                    and isinstance(body, dict)
+                    and body.get("agentId") == CODEX_HOOK_SOURCE
+                    and body.get("jobId")
+                    and body.get("kind") in {"started", "completed", "failed"}
+                ):
                     mirror_activity(app, body)
                 self._send(status, payload)
                 return
@@ -879,7 +949,8 @@ def register_http(app: App, body: object) -> tuple[int, dict]:
 
 def mirror_activity(app: App, body: dict) -> None:
     agent_id = body.get("agentId")
-    if not isinstance(agent_id, str) or app.store.get_agent(agent_id) is None:
+    # The hook credential's identity is codex-hook. It must not change another bot's seat.
+    if agent_id != CODEX_HOOK_SOURCE or not isinstance(agent_id, str) or app.store.get_agent(agent_id) is None:
         return
     kind = {"started": "task.started", "completed": "task.completed", "failed": "task.failed"}[body["kind"]]
     mapped = {
@@ -974,7 +1045,14 @@ def main(argv: list[str]) -> int:
     print(f"bind=127.0.0.1:{args.port}")
     print(f"ui=http://127.0.0.1:{args.port}/")
     print(f"runtime_dir={runtime}")
+    print(f"runtime_marker={runtime_marker(runtime)}")
     print(f"header_dir={runtime / 'headers'}")
+    try:
+        write_private(runtime / "endpoint", f"http://127.0.0.1:{args.port}\n")
+    except OSError as error:
+        httpd.server_close()
+        print(redact(f"receiver startup failed: {error}"), file=sys.stderr)
+        return 2
     print(f"register_key_file={runtime / 'register.key'}")
     print(f"ttl_ms={args.ttl_ms}")
     print(f"version={VERSION}")

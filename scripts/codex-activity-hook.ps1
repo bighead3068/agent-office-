@@ -31,7 +31,8 @@ try {
     }
 
     $service = 'agent-office'
-    $headerPath = Join-Path $env:LOCALAPPDATA "$service\headers\codex-hook.header"
+    $runtime = if ($env:OFFICE_RUNTIME_DIR) { $env:OFFICE_RUNTIME_DIR } else { Join-Path $env:LOCALAPPDATA $service }
+    $headerPath = Join-Path $runtime "headers\codex-hook.header"
     if (-not (Test-Path -LiteralPath $headerPath -PathType Leaf)) {
         return
     }
@@ -42,7 +43,13 @@ try {
     $handler.AllowAutoRedirect = $false
     $http = [Net.Http.HttpClient]::new($handler)
     $http.Timeout = [TimeSpan]::FromMilliseconds(650)
-    $url = 'http://127.0.0.1:8795'
+    $endpointFile = Join-Path $runtime "endpoint"
+    if (Test-Path -LiteralPath $endpointFile) {
+        $url = (Get-Content -LiteralPath $endpointFile -TotalCount 1).Trim()
+    } else {
+        $port = if ($env:OFFICE_PORT) { $env:OFFICE_PORT } else { '8795' }
+        $url = "http://127.0.0.1:$port"
+    }
     $health = ConvertFrom-Json -InputObject $http.GetStringAsync("$url/health").GetAwaiter().GetResult()
     if ($health.ok -isnot [bool] -or -not $health.ok -or
         $health.service -cne $service -or $health.evidenceType -cne 'bot-self-report' -or

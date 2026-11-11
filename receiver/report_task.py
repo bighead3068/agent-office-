@@ -13,8 +13,13 @@ Status semantics:
 - failed: this job failed. Stays failed, and is not reported as blocked.
 
 Repeating the same agent, job, and status reuses one event id, so the receiver
-dedupes it. Pass --event-id to name a different event. A resend with the same
+dedupes it while that report is still the current one. After the same job is
+completed or failed, sending started again opens a new round instead of staying
+deduped. Pass --event-id to name a different event. A resend with the same
 event id and a different title is a conflict and does not overwrite.
+
+If this runtime has no header for the agent, a v0.1 header directory is read.
+Old state.json files are not read. Port 8793 is not served; point --url at 8795.
 """
 
 from __future__ import annotations
@@ -52,7 +57,7 @@ def normalize_url(url: str) -> str:
 
 
 def read_own_header(runtime: Path, agent_id: str) -> str:
-    path = srv.header_file(runtime, agent_id)
+    path = srv.find_header_file(runtime, agent_id)
     if not path.is_file():
         raise FileNotFoundError(agent_id)
     line = path.read_text(encoding="utf-8").strip()

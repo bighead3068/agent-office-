@@ -31,10 +31,20 @@ export function AgentOfficeApp() {
   return demo ? <DemoOffice /> : <RealOffice />
 }
 
+function lostConnection(agents: DeskAgent[]): DeskAgent[] {
+  return agents.map((agent) => ({
+    ...agent,
+    lastKnownStatus: agent.effectiveStatus === "unknown" ? agent.lastKnownStatus : agent.effectiveStatus,
+    effectiveStatus: "unknown",
+    freshness: agent.freshness === "none" ? "none" : "stale",
+  }))
+}
+
 function RealOffice() {
   const snapshot = useSnapshot(true, "/api/state", projectOfficeState)
   const [selectedId, setSelectedId] = useState(() => (typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("seat") ?? ""))
-  const agents = snapshot.data?.agents ?? []
+  const loaded = snapshot.data?.agents ?? []
+  const agents = snapshot.error ? lostConnection(loaded) : loaded
   return (
     <div className="office-page" data-view="real" data-partition="real">
       <header className="topbar">
@@ -131,7 +141,7 @@ function toDesk(agent: ReturnType<typeof sceneAgents>[number], index: number): D
     lastKnownStatus: agent.lastKnownStatus ?? agent.status,
     freshness: agent.freshness,
     taskTitle: agent.task?.title ?? "",
-    terminalAt: agent.status === "completed" || agent.status === "failed" ? at : null,
+    terminalAt: agent.lastKnownStatus === "completed" || agent.lastKnownStatus === "failed" || agent.status === "completed" || agent.status === "failed" ? at : null,
     lastReportAt: at,
     reason: agent.freshness === "stale" ? "ttl" : "report",
     disconnected: !agent.connected,
