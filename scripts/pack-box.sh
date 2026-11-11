@@ -7,7 +7,7 @@ stage="$(mktemp -d)"
 pkg="$stage/agent-office-self-report"
 mkdir -p "$pkg/receiver" "$pkg/dist" "$root/packaging"
 cp -a dist/. "$pkg/dist/"
-cp receiver/self_report_server.py "$pkg/receiver/self_report_server.py"
+cp receiver/self_report_server.py receiver/codex_activity.py "$pkg/receiver/"
 cp receiver/Start-AgentOffice.ps1 "$pkg/Start-AgentOffice.ps1"
 cp receiver/README-BOX.md "$pkg/README-BOX.md"
 if grep -R -n -E 'Bearer [A-Za-z0-9_-]{20,}|token_urlsafe\(' "$pkg/dist" "$pkg/Start-AgentOffice.ps1" "$pkg/README-BOX.md"; then

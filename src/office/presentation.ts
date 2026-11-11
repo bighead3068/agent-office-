@@ -1,6 +1,6 @@
 import type { EasterEggId } from './easterEggs'
 import { isEasterEggEligible } from './easterEggs'
-import type { AgentStatus, OfficeAgent } from './types'
+import type { AgentStatus, DeskPresence, OfficeAgent } from './types'
 
 /** How long the one-shot "hand raise" takes before it holds. */
 export const WAIT_RAISE_MS = 700
@@ -64,6 +64,7 @@ export interface PresentSeatOptions {
   waitingSince: number | null
   /** Egg already vetted by the state machine. Ignored unless the agent is still eligible. */
   egg: EasterEggId | null
+  playful?: boolean
 }
 
 /**
@@ -90,7 +91,7 @@ export function presentSeat(agent: OfficeAgent, options: PresentSeatOptions): Se
     options.egg != null &&
     !options.reducedMotion &&
     !stale &&
-    isEasterEggEligible(agent)
+    isEasterEggEligible(agent, options.playful)
 
   if (eggAllowed && options.egg) {
     pose = options.egg
@@ -98,10 +99,11 @@ export function presentSeat(agent: OfficeAgent, options: PresentSeatOptions): Se
     animate = true
   }
 
-  if (stale || options.reducedMotion) animate = false
+  if (stale || options.reducedMotion || agent.deskPresence) animate = false
+  if (agent.deskPresence) bubble = null
 
   return {
-    monitor: base.monitor,
+    monitor: agent.deskPresence ? 'off' : base.monitor,
     bubble,
     pose,
     animate,
@@ -127,6 +129,11 @@ export const STATUS_WORD: Record<AgentStatus, string> = {
   offline: "明確離線",
 }
 
+export const DESK_PRESENCE_WORD: Record<DeskPresence, string> = {
+  away: '離席',
+  unseated: '尚未入座',
+}
+
 /** Format a timestamp for the stale tag and the accessible name. Unparseable strings pass through. */
 export function formatUpdatedAt(value: string | undefined): string {
   if (!value) return "時間不明"
@@ -148,9 +155,10 @@ export function formatUpdatedAt(value: string | undefined): string {
  * Accessible name in Traditional Chinese.
  * Stale and disconnected are spoken as well so they are not color-only.
  */
-export function agentAriaLabel(agent: OfficeAgent): string {
+export function agentAriaLabel(agent: OfficeAgent, statusLabel = STATUS_WORD[agent.status]): string {
   const updated = formatUpdatedAt(agent.lastUpdatedAt)
   const stale = agent.freshness === "stale" ? "，過期" : ""
   const disconnected = !agent.connected && agent.status !== "offline" ? "，斷線" : ""
-  return `${agent.name}，${agent.role}，${STATUS_WORD[agent.status]}${stale}${disconnected}，上次更新 ${updated}`
+  const presence = agent.deskPresence ? `，${DESK_PRESENCE_WORD[agent.deskPresence]}` : ''
+  return `${agent.name}，${agent.role}，${statusLabel}${presence}${stale}${disconnected}，上次更新 ${updated}`
 }

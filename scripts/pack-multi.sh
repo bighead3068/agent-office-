@@ -7,7 +7,7 @@ stage="$(mktemp -d)"
 pkg="$stage/agent-office-multi-report"
 mkdir -p "$pkg/receiver" "$pkg/dist" "$root/packaging"
 cp -a dist/. "$pkg/dist/"
-cp receiver/self_report_server.py receiver/report_task.py "$pkg/receiver/"
+cp receiver/self_report_server.py receiver/report_task.py receiver/codex_activity.py "$pkg/receiver/"
 cp receiver/Start-MultiReport.ps1 "$pkg/Start-MultiReport.ps1"
 cp receiver/README-MULTI.md "$pkg/README-MULTI.md"
 if grep -R -n -E 'Bearer [A-Za-z0-9_-]{20,}' "$pkg/dist" "$pkg/Start-MultiReport.ps1" "$pkg/README-MULTI.md"; then

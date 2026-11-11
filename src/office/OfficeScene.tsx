@@ -6,11 +6,13 @@ import {
   resolveOfficeSceneConfig,
   stepAgentEgg,
   type AgentEggState,
+  type EasterEggId,
 } from './easterEggs'
 import { iconRows, type PixelIconName } from './icons'
 import { LAYOUT, LOGICAL_HEIGHT, LOGICAL_WIDTH, computeScale, type Box } from './layout'
-import { STATUS_WORD, agentAriaLabel, formatUpdatedAt, presentSeat } from './presentation'
-import { assignSeats, emptyOwners } from './seats'
+import { DESK_PRESENCE_WORD, STATUS_WORD, agentAriaLabel, formatUpdatedAt, presentSeat } from './presentation'
+import { assignSeats, readSeatOwners, saveSeatOwners } from './seats'
+import { SupervisorCat, useSupervisorPatrol } from './SupervisorCat'
 import {
   AGENT_STATUSES,
   SEAT_IDS,
@@ -34,6 +36,11 @@ const LEGEND_ICON: Record<AgentStatus, PixelIconName> = {
 }
 
 const SEAT_LAYOUT = LAYOUT.seats
+const EGG_MESSAGE: Record<EasterEggId, string> = {
+  coffee: '咖啡補給中',
+  nap: '閉眼五秒',
+  water: '喝水充電中',
+}
 
 function usePrefersReducedMotion(override: boolean | undefined): boolean {
   const [system, setSystem] = useState(() => {
@@ -110,9 +117,13 @@ function PixelIcon({ name, className }: { name: PixelIconName; className?: strin
  */
 export function OfficeScene({
   agents,
+  statusLabels,
   selectedId,
   onSelect,
   config,
+  playful = false,
+  seatStorageKey,
+  rotateSeats = false,
   now,
   reducedMotion,
   className,
@@ -128,6 +139,7 @@ export function OfficeScene({
   const scale = computeScale(containerWidth)
   const [internalNow, setInternalNow] = useState(() => Date.now())
   const clock = now ?? internalNow
+  const patrol = useSupervisorPatrol(clock, reduced)
 
   useEffect(() => {
     if (now != null || reduced) return
@@ -135,40 +147,61 @@ export function OfficeScene({
     return () => window.clearInterval(id)
   }, [now, reduced])
 
-  const ownersRef = useRef(emptyOwners())
-  const assignment = assignSeats(agents, ownersRef.current)
-  ownersRef.current = assignment.nextOwners
+  const ownersRef = useRef<{ key: string | undefined; owners: ReturnType<typeof readSeatOwners> } | null>(null)
+  if (ownersRef.current?.key !== seatStorageKey || !ownersRef.current) {
+    ownersRef.current = { key: seatStorageKey, owners: readSeatOwners(seatStorageKey) }
+  }
+  const assignment = assignSeats(agents, ownersRef.current.owners, rotateSeats)
+  const saveAssignment = Boolean(seatStorageKey && agents.length > 0)
+  // Empty snapshots can arrive while a feed reconnects. Keep the stored owners
+  // in that interval so the next populated snapshot can restore their desks.
+  if (!seatStorageKey || saveAssignment) ownersRef.current.owners = assignment.nextOwners
+  const serializedOwners = JSON.stringify(ownersRef.current.owners)
+  useEffect(() => {
+    if (seatStorageKey && saveAssignment) saveSeatOwners(seatStorageKey, serializedOwners)
+  }, [seatStorageKey, saveAssignment, serializedOwners])
 
-  const eggRef = useRef<Record<string, AgentEggState>>({})
+  const eggRef = useRef<Record<string, AgentEggState>>(Object.create(null))
   const eggKeyRef = useRef('')
-  const eggKey = [
+  const eggKey = JSON.stringify([
     clock,
-    reduced ? 1 : 0,
+    reduced,
+    playful,
     resolved.easterEggIdleWaitMs,
     resolved.easterEggFrequencyCapMs,
     resolved.easterEggDurationMs,
-    agents
-      .map((agent) => `${agent.id}:${agent.status}:${agent.freshness}:${agent.connected ? 1 : 0}`)
-      .join('|'),
-  ].join('~')
+    Object.values(assignment.seats).map((agent) => agent && [
+      agent.id, agent.status, agent.freshness, agent.connected, agent.deskPresence,
+      agent.task?.title, agent.task?.source, agent.task?.updatedAt,
+    ]),
+  ])
 
   if (eggKeyRef.current !== eggKey) {
-    const next: Record<string, AgentEggState> = {}
-    for (const agent of agents) {
+    const next: Record<string, AgentEggState> = Object.create(null)
+    for (const agent of Object.values(assignment.seats)) {
+      if (!agent) continue
       next[agent.id] = stepAgentEgg(
         agent,
         eggRef.current[agent.id] ?? createAgentEggState(),
         clock,
         resolved,
         reduced,
+        playful,
+      )
+    }
+    for (const agent of assignment.overflow) {
+      const previous = eggRef.current[agent.id]
+      if (!previous || next[agent.id]) continue
+      next[agent.id] = stepAgentEgg(
+        { ...agent, deskPresence: 'unseated' }, previous, clock, resolved, reduced, playful,
       )
     }
     eggRef.current = next
     eggKeyRef.current = eggKey
   }
 
-  const waitingRef = useRef<Record<string, number>>({})
-  const frameRef = useRef<Record<string, 0 | 1>>({})
+  const waitingRef = useRef<Record<string, number>>(Object.create(null))
+  const frameRef = useRef<Record<string, 0 | 1>>(Object.create(null))
   const seenWaiting = new Set<string>()
 
   const seatModels: DrawSeatModel[] = []
@@ -178,7 +211,8 @@ export function OfficeScene({
     label: string
     presentation: ReturnType<typeof presentSeat> | null
     frame: 0 | 1
-    egg: string
+    egg: EasterEggId | null
+    catPassing: boolean
   }> = []
 
   for (const seatId of SEAT_IDS) {
@@ -193,11 +227,11 @@ export function OfficeScene({
         frame: 0,
         selected: false,
       })
-      seatViews.push({ seatId, agent: null, label: '', presentation: null, frame: 0, egg: '' })
+      seatViews.push({ seatId, agent: null, label: '', presentation: null, frame: 0, egg: null, catPassing: false })
       continue
     }
 
-    const playRaise = agent.status === 'waiting' && agent.freshness === 'fresh' && !reduced
+    const playRaise = agent.status === 'waiting' && agent.freshness === 'fresh' && !agent.deskPresence && !reduced
     let waitingSince: number | null = null
     if (playRaise) {
       seenWaiting.add(agent.id)
@@ -206,7 +240,10 @@ export function OfficeScene({
     }
 
     const egg = eggRef.current[agent.id]?.activeEgg ?? null
-    const presentation = presentSeat(agent, { reducedMotion: reduced, now: clock, waitingSince, egg })
+    const catPassing = Boolean(playful && egg && patrol.inspects(SEAT_LAYOUT[seatId]))
+    const presentation = presentSeat(agent, {
+      reducedMotion: reduced, now: clock, waitingSince, egg: catPassing ? null : egg, playful,
+    })
     let frame: 0 | 1
     if (presentation.animate) {
       frame = Math.floor(clock / 280) % 2 === 0 ? 0 : 1
@@ -218,7 +255,7 @@ export function OfficeScene({
     seatModels.push({
       seatId,
       box: SEAT_LAYOUT[seatId],
-      occupied: true,
+      occupied: !agent.deskPresence,
       lookIndex: SEAT_IDS.indexOf(seatId),
       presentation,
       frame,
@@ -227,10 +264,11 @@ export function OfficeScene({
     seatViews.push({
       seatId,
       agent,
-      label: agentAriaLabel(agent),
+      label: agentAriaLabel(agent, statusLabels?.[agent.status]),
       presentation,
       frame,
-      egg: egg ?? '',
+      egg,
+      catPassing,
     })
   }
 
@@ -245,6 +283,7 @@ export function OfficeScene({
   }
 
   const selected = agents.find((agent) => agent.id === selectedId) ?? null
+  const listedStatuses = statusLabels ? AGENT_STATUSES.filter((status) => statusLabels[status]) : AGENT_STATUSES
   const stageW = Math.round(LOGICAL_WIDTH * scale)
   const stageH = Math.round(LOGICAL_HEIGHT * scale)
   const fontSize = Math.max(8, 11 * (scale >= 1 ? Math.min(scale, 3) : scale))
@@ -263,7 +302,12 @@ export function OfficeScene({
     if (!context) return
     context.setTransform(pixelScale, 0, 0, pixelScale, 0, 0)
     context.imageSmoothingEnabled = false
-    drawOffice(context, { seats: seatModels, reducedMotion: reduced, tick: Math.floor(clock / 280) % 2 === 0 ? 0 : 1 })
+    drawOffice(context, {
+      seats: seatModels,
+      reducedMotion: reduced,
+      tick: Math.floor(clock / 280) % 2 === 0 ? 0 : 1,
+      playful,
+    })
   })
 
   const rootClass = className ? `ao-scene ${className}` : 'ao-scene'
@@ -282,9 +326,9 @@ export function OfficeScene({
         <section className="ao-board" style={boxStyle(LAYOUT.manager, scale)} aria-label="座位概況">
           <h2 className="ao-board-title">座位</h2>
           <ul className="ao-counts">
-            {AGENT_STATUSES.map((status) => (
+            {listedStatuses.map((status) => (
               <li key={status} data-count={status}>
-                <span>{STATUS_LABEL[status]}</span>
+                <span>{statusLabels?.[status] ?? STATUS_LABEL[status]}</span>
                 <span>{counts[status]}</span>
               </li>
             ))}
@@ -294,7 +338,7 @@ export function OfficeScene({
               <>
                 <span className="ao-kicker">選中</span>
                 <strong>{selected.name}</strong>
-                <span>{selected.task?.title ?? '沒有進行中的任務'}</span>
+                <span>{selected.task?.title ?? statusLabels?.[selected.status] ?? '沒有進行中的任務'}</span>
                 {selected.task?.source ? <span className="ao-source">{selected.task.source}</span> : null}
                 {selected.freshness === 'stale' ? <span className="ao-kicker">過期讀數</span> : null}
               </>
@@ -308,10 +352,10 @@ export function OfficeScene({
         </section>
 
         <ul className="ao-legend" style={boxStyle(LAYOUT.legend, scale)} aria-label="狀態圖例">
-          {AGENT_STATUSES.map((status) => (
+          {listedStatuses.map((status) => (
             <li key={status}>
               <PixelIcon name={LEGEND_ICON[status]} className={`ao-legend-icon ao-legend-icon-${status}`} />
-              <span>{STATUS_LABEL[status]}</span>
+              <span>{statusLabels?.[status] ?? STATUS_LABEL[status]}</span>
             </li>
           ))}
         </ul>
@@ -346,6 +390,8 @@ export function OfficeScene({
               data-agent-id={agent.id}
               data-status={agent.status}
               data-freshness={agent.freshness}
+              data-desk-presence={agent.deskPresence}
+              data-seat-occupied={!agent.deskPresence}
               data-connected={agent.connected ? 'true' : 'false'}
               data-selected={agent.id === selectedId ? 'true' : 'false'}
               data-monitor={presentation.monitor}
@@ -358,15 +404,23 @@ export function OfficeScene({
               data-opacity={presentation.opacity}
               data-document={presentation.deskDocument ? 'true' : 'false'}
               data-plug={presentation.plugIcon ? 'true' : 'false'}
-              data-egg={view.egg}
+              data-egg={view.egg ?? ''}
               aria-label={view.label}
               aria-pressed={agent.id === selectedId}
               title={taskTitle}
               onClick={() => onSelect?.(agent.id)}
             >
+              {playful && view.egg ? (
+                <span className="ao-egg" aria-hidden="true">
+                  <strong>{view.catPassing ? '假裝在忙' : '偷懶中'}</strong>
+                  <span>{view.catPassing ? '貓咪經過！' : EGG_MESSAGE[view.egg]}</span>
+                </span>
+              ) : null}
               <span className="ao-nameplate">
                 <span className="ao-name">{agent.name}</span>
                 <span className="ao-role">{agent.role}</span>
+                {statusLabels?.[agent.status] ? <span className="ao-flag">{statusLabels[agent.status]}</span> : null}
+                {agent.deskPresence ? <span className="ao-flag ao-presence">{DESK_PRESENCE_WORD[agent.deskPresence]}</span> : null}
                 {presentation.offlineLabel ? <span className="ao-flag ao-offline">離線</span> : null}
                 {!agent.connected && agent.status !== 'offline' ? (
                   <span className="ao-flag ao-disconnected">斷線</span>
@@ -378,6 +432,18 @@ export function OfficeScene({
             </button>
           )
         })}
+        {playful ? (
+          <SupervisorCat
+            patrol={patrol}
+            scale={scale}
+            occupied={seatModels.filter((seat) => seat.occupied).length}
+            capacity={SEAT_IDS.length}
+            overflow={assignment.overflow.length}
+            statusCounts={listedStatuses.map((status) => ({
+              status, label: statusLabels?.[status] ?? STATUS_LABEL[status], count: counts[status],
+            }))}
+          />
+        ) : null}
       </div>
     </div>
   )

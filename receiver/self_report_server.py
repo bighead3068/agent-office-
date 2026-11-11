@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Local multi-source self-report receiver.
 
-Python 3.10 stdlib only. Default bind is 127.0.0.1:8793 and the runtime
-directory is agent-office-multi-report. It refuses port 8792 and the older
-agent-office-self-report directory so an upgrade cannot replace the running
-single-agent receiver.
+Python 3.10 stdlib only. The default Bot roster uses 127.0.0.1:8793 and
+agent-office-multi-report. The optional Codex roster uses 127.0.0.1:8794
+and agent-office-codex-report. Port 8792 and agent-office-self-report are
+reserved for the existing single-agent receiver.
 
 Each trusted source gets its own header file. The token is never printed.
 A request cannot choose a different source than the token. GET is same-origin,
@@ -19,17 +19,23 @@ import json
 import os
 import re
 import secrets
+import socket
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 EVIDENCE_TYPE = "bot-self-report"
 LEGACY_PORT = 8792
+BOT_PORT = 8793
+CODEX_PORT = 8794
 LEGACY_RUNTIME_NAME = "agent-office-self-report"
 RUNTIME_NAME = "agent-office-multi-report"
+CODEX_RUNTIME_NAME = "agent-office-codex-report"
+CODEX_ACTIVITY_PATH = "/api/codex-activity"
+CODEX_HOOK_SOURCE = "codex-hook"
 FIXTURE_SOURCE = "fixture-local"
 FIXTURE_AGENT = "fixture-agent"
 FIXTURE_NAME = "夾具代理人"
@@ -51,17 +57,25 @@ TRUSTED = (
 )
 TRUSTED_IDS = tuple(item["agentId"] for item in TRUSTED)
 COORDINATOR_ID = TRUSTED_IDS[0]
+CODEX = (
+    {"agentId": "codex-lead", "name": "Codex 協調"},
+    {"agentId": "codex-api", "name": "Codex 接收器"},
+    {"agentId": "codex-ui", "name": "Codex 看板"},
+    {"agentId": "codex-qa", "name": "Codex 驗證"},
+)
+ROSTERS = {"bot": TRUSTED, "codex": CODEX}
 ALLOWED_FIELDS = {"eventId", "type", "jobId", "at", "sourceId", "agentId", "label", "taskTitle"}
 ALLOWED_TYPES = {"task.started", "task.completed", "task.failed", "task.progress"}
 
 
-def default_runtime_dir() -> Path:
+def default_runtime_dir(roster: str = "bot") -> Path:
+    name = CODEX_RUNTIME_NAME if roster == "codex" else RUNTIME_NAME
     if os.name == "nt":
         root = os.environ.get("LOCALAPPDATA") or str(Path.home())
-        return Path(root) / RUNTIME_NAME
+        return Path(root) / name
     data = os.environ.get("XDG_DATA_HOME")
     base = Path(data) if data else Path.home() / ".local" / "share"
-    return base / RUNTIME_NAME
+    return base / name
 
 
 def restrict(path: Path) -> None:
@@ -335,25 +349,62 @@ def project(state: dict, roster: tuple[dict, ...], now: int, ttl_ms: int) -> dic
 
 
 class App:
-    def __init__(self, runtime: Path, ttl_ms: int, enable_fixtures: bool, static_dir: Optional[Path]) -> None:
+    def __init__(
+        self, runtime: Path, ttl_ms: int, enable_fixtures: bool, static_dir: Optional[Path], *, roster: str = "bot"
+    ) -> None:
         self.runtime = runtime
         self.ttl_ms = ttl_ms
         self.static_dir = static_dir
         self.lock = threading.Lock()
-        runtime.mkdir(parents=True, exist_ok=True)
-        restrict(runtime)
-        self.roster = TRUSTED
-        self.tokens = {item["agentId"]: issue_header(runtime, item["agentId"]) for item in TRUSTED}
+        self.roster_name = roster
+        self.roster = ROSTERS[roster]
         self.real_state_path = runtime / "state.json"
-        self.real_state = load_state(self.real_state_path, "real", TRUSTED)
+        self.real_state = load_state(self.real_state_path, "real", self.roster)
         self.fixture_token = None
         self.fixture_state = None
         self.fixture_state_path = None
         self.fixture_roster = ({"agentId": FIXTURE_AGENT, "name": FIXTURE_NAME},)
         if enable_fixtures:
-            self.fixture_token = issue_header(runtime, FIXTURE_AGENT)
             self.fixture_state_path = runtime / "fixture-state.json"
             self.fixture_state = load_state(self.fixture_state_path, "fixture", self.fixture_roster)
+        foreign_roster = CODEX if roster == "bot" else TRUSTED
+        if any(header_file(runtime, item["agentId"]).exists() for item in foreign_roster):
+            raise SystemExit(f"refusing to use a runtime directory for a different roster: {runtime}")
+        runtime.mkdir(parents=True, exist_ok=True)
+        # Claim a fresh runtime before issuing credentials, even if no reports are saved yet.
+        marker = runtime / "roster"
+        try:
+            with marker.open("x", encoding="ascii") as stream:
+                stream.write(roster)
+        except FileExistsError:
+            try:
+                saved_roster = marker.read_text(encoding="ascii")
+            except PermissionError:
+                if os.name != "nt":
+                    raise
+                # Older receivers could leave this marker without an inherited Windows ACL.
+                restrict(marker)
+                saved_roster = marker.read_text(encoding="ascii")
+            if saved_roster != roster:
+                raise SystemExit(f"refusing to use a runtime directory for a different roster: {runtime}")
+        else:
+            restrict(marker)
+        restrict(runtime)
+        self.activity = None
+        self.activity_token = None
+        if roster == "codex":
+            if __package__:
+                from .codex_activity import ActivityStore
+            else:
+                from codex_activity import ActivityStore
+
+            activity_path = runtime / "codex-activity.sqlite3"
+            self.activity = ActivityStore(activity_path)
+            restrict(activity_path)
+            self.activity_token = issue_header(runtime, CODEX_HOOK_SOURCE)
+        self.tokens = {item["agentId"]: issue_header(runtime, item["agentId"]) for item in self.roster}
+        if enable_fixtures:
+            self.fixture_token = issue_header(runtime, FIXTURE_AGENT)
 
     def classify(self, token: str) -> Optional[tuple[str, str]]:
         for agent_id, saved in self.tokens.items():
@@ -369,7 +420,10 @@ class App:
                 if self.fixture_state is None:
                     return {"ok": False, "error": "fixtures_disabled"}
                 return project(self.fixture_state, self.fixture_roster, now_ms(), self.ttl_ms)
-            return project(self.real_state, self.roster, now_ms(), self.ttl_ms)
+            snapshot = project(self.real_state, self.roster, now_ms(), self.ttl_ms)
+            if self.roster_name == "codex":
+                snapshot["roster"] = self.roster_name
+            return snapshot
 
     def accept(self, partition: str, kind: str, bound_id: str, body: dict) -> tuple[int, dict]:
         if kind != partition:
@@ -425,7 +479,17 @@ def make_handler(app: App):
         def do_GET(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
             if path == "/health":
-                self._send(200, {"ok": True, "service": RUNTIME_NAME, "evidenceType": EVIDENCE_TYPE})
+                service = CODEX_RUNTIME_NAME if app.roster_name == "codex" else RUNTIME_NAME
+                payload = {"ok": True, "service": service, "evidenceType": EVIDENCE_TYPE}
+                if app.activity is not None:
+                    payload["codexActivity"] = True
+                self._send(200, payload)
+                return
+            if path == CODEX_ACTIVITY_PATH:
+                if app.activity is None:
+                    self._send(404, {"ok": False, "error": "not_found"})
+                else:
+                    self._send(200, app.activity.snapshot())
                 return
             partition = self._partition(path)
             if partition:
@@ -439,17 +503,27 @@ def make_handler(app: App):
         def do_POST(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
             partition = self._partition(path)
-            if partition is None:
+            activity = app.activity if path == CODEX_ACTIVITY_PATH else None
+            if partition is None and activity is None:
                 self._send(404, {"ok": False, "error": "not_found"})
                 return
             header = self.headers.get("Authorization", "")
             if not header.startswith("Bearer ") or header == "Bearer ":
                 self._send(401, {"ok": False, "error": "unauthorized"})
                 return
-            found = app.classify(header[7:].strip())
-            if found is None:
+            token = header[7:].strip()
+            if not token.isascii():
                 self._send(401, {"ok": False, "error": "unauthorized"})
                 return
+            if activity is not None:
+                if not secrets.compare_digest(token, app.activity_token):
+                    self._send(401, {"ok": False, "error": "unauthorized"})
+                    return
+            else:
+                found = app.classify(token)
+                if found is None:
+                    self._send(401, {"ok": False, "error": "unauthorized"})
+                    return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
@@ -461,11 +535,14 @@ def make_handler(app: App):
             raw = self.rfile.read(length)
             try:
                 body = json.loads(raw.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError):
+            except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
                 self._send(400, {"ok": False, "error": "malformed"})
                 return
-            kind, bound_id = found
-            status, payload = app.accept(partition, kind, bound_id, body)
+            if activity is not None:
+                status, payload = activity.accept(body, now_ms())
+            else:
+                kind, bound_id = found
+                status, payload = app.accept(partition, kind, bound_id, body)
             self._send(status, payload)
 
         def do_OPTIONS(self) -> None:  # noqa: N802
@@ -499,16 +576,27 @@ def make_handler(app: App):
     return Handler
 
 
-def serve(app: App, host: str, port: int) -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer((host, port), make_handler(app))
-    httpd.daemon_threads = True
+def serve(app: App | Callable[[], App], host: str, port: int) -> ThreadingHTTPServer:
+    httpd = ThreadingHTTPServer((host, port), BaseHTTPRequestHandler, bind_and_activate=False)
+    try:
+        if os.name == "nt":
+            # On Windows SO_REUSEADDR can permit a second server to bind a live port.
+            httpd.allow_reuse_address = False
+            httpd.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        httpd.server_bind()
+        httpd.server_activate()
+        httpd.RequestHandlerClass = make_handler(app() if callable(app) else app)
+    except BaseException:
+        httpd.server_close()
+        raise
     return httpd
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Agent Office multi-source self-report receiver")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8793)
+    parser.add_argument("--port", type=int)
+    parser.add_argument("--roster", choices=ROSTERS, default="bot")
     parser.add_argument("--runtime-dir", default="")
     parser.add_argument("--static-dir", default="")
     parser.add_argument("--ttl-ms", type=int, default=DEFAULT_TTL_MS)
@@ -518,33 +606,43 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
-    if args.port == LEGACY_PORT:
-        print("refusing port 8792; leave the existing receiver running and use 8793", file=sys.stderr)
+    codex = args.roster == "codex"
+    default_port = CODEX_PORT if codex else BOT_PORT
+    port = args.port if args.port is not None else default_port
+    if port == LEGACY_PORT:
+        print(f"refusing port 8792; leave the existing receiver running and use {default_port}", file=sys.stderr)
+        return 2
+    if codex and port == BOT_PORT:
+        print(f"refusing port {port}; it belongs to the other roster", file=sys.stderr)
         return 2
     if args.ttl_ms <= 0:
         print("ttl-ms must be positive", file=sys.stderr)
         return 2
-    runtime = Path(args.runtime_dir).expanduser() if args.runtime_dir else default_runtime_dir()
-    if runtime.name == LEGACY_RUNTIME_NAME:
-        print("refusing the existing agent-office-self-report runtime directory", file=sys.stderr)
+    runtime = Path(args.runtime_dir).expanduser() if args.runtime_dir else default_runtime_dir(args.roster)
+    runtime_parts = {part.casefold() for part in (*runtime.absolute().parts, *runtime.resolve().parts)}
+    foreign_runtime = RUNTIME_NAME if codex else CODEX_RUNTIME_NAME
+    if LEGACY_RUNTIME_NAME in runtime_parts or foreign_runtime in runtime_parts:
+        print("refusing a runtime directory reserved for another receiver", file=sys.stderr)
         return 2
     static_dir = Path(args.static_dir).expanduser() if args.static_dir else None
     if args.host not in {"127.0.0.1", "::1", "localhost"}:
         print("warning: bind is not loopback. GET has no auth. Do not open a firewall.", file=sys.stderr)
-    app = App(runtime, args.ttl_ms, args.enable_fixtures, static_dir)
-    httpd = serve(app, args.host, args.port)
-    bound_host, bound_port = httpd.server_address[:2]
-    print(f"bind={bound_host}:{bound_port}")
-    print(f"runtime_dir={runtime}")
-    print(f"header_dir={runtime / 'headers'}")
-    print("agents=" + ",".join(TRUSTED_IDS))
-    print(f"ttl_ms={args.ttl_ms}")
-    print(f"evidence={EVIDENCE_TYPE}")
-    print("token_not_printed=yes")
     try:
-        httpd.serve_forever()
+        with serve(lambda: App(runtime, args.ttl_ms, args.enable_fixtures, static_dir, roster=args.roster), args.host, port) as httpd:
+            bound_host, bound_port = httpd.server_address[:2]
+            print(f"bind={bound_host}:{bound_port}")
+            print(f"runtime_dir={runtime}")
+            print(f"header_dir={runtime / 'headers'}")
+            print("agents=" + ",".join(item["agentId"] for item in ROSTERS[args.roster]))
+            print(f"ttl_ms={args.ttl_ms}")
+            print(f"evidence={EVIDENCE_TYPE}")
+            print("token_not_printed=yes")
+            httpd.serve_forever()
     except KeyboardInterrupt:
         return 0
+    except OSError as error:
+        print(f"receiver startup failed: {error}", file=sys.stderr)
+        return 2
     return 0
 
 
