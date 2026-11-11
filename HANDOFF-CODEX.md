@@ -57,3 +57,17 @@
 - 難的任務：`-m gpt-6.1-sol -c model_reasoning_effort=medium`；簡單的：`-m gpt-6.1-terra -c model_reasoning_effort=medium`
 - PowerShell 5.1 傳長提示容易被引號切斷，建議把提示寫成檔案再用 stdin 傳入：`Get-Content prompt.txt -Raw | codex exec --skip-git-repo-check ... -`
 - 這台電腦目前沒有安裝 git；要直接推送需先安裝 git 並登入 GitHub。
+
+## 互動設計驗收 e5d44ba（2026-11-11 20:09）：不合格，需修
+（截圖在共用電腦 /workspace/agent-office-v02-review/shots-d/）
+A. 版面
+- #2 窄版（1024–1279 橫條、<1024 清單）斷線仍顯示「需要注意 0」「沒有受阻」：OfficeFloor.tsx:502、:619-620 要判斷 disconnected，改「需要注意 ?」+⏱；.strip-conclusion 改 ellipsis 或縮短為「斷線・HH:MM 資料」。
+- #3 最近變化假紀錄：示範切換情境要清空並重設基準；刪 seedDemoChanges（:305/:359/:377）的無來源「→工作中」；真實模式只在 reason==='report' 時記錄。
+- #7 小數座標：帳本需要注意列（CSS:425-428）b 高/行高 22、.seat-code 與 em 16、.ledger-task 20；.more-btn width 96、line-height 18。
+- 新：.count-cell 高 44 不夠，改 48 或圖示移到標籤左側；清單版「需要注意 ▾」點了不展開（:618 只在 tier==='bar' 渲染）。
+B. 討論過場（三案皆不合格）
+- 共通：前端要由 /api/state.discussions 驅動（AgentOfficeApp.tsx:123-129 寫死），示範模式改餵模擬事件；主持人或成員不是「fresh 且工作中」就取消討論並回座；「討論中・與X」作第二行子標籤，不蓋主狀態（:719）；reduced motion 一律用方案 3（:672）。
+- 伺服器 self_report_server.py:515+：maxMs 到期要結束討論；TTL 過期/離線取消討論；他人用同 discussionId 送 started 回 409；儲存 jobId。
+- 方案 1：用 rAF 依路徑長度 ÷ 64px/s 真的移動（:662 固定 55%），上限 5 秒否則改方案 3；4 幀 8fps 走路循環、依方向選 down/left（right 鏡像）、抵達面向對方；終點為對方側位（錨點 ±32，被擋走另一側）；修 discussion.ts:2 DESK 格子方向並實際使用；走路角色 z-index 高於名牌；補 ended 後走回座位再開始工作。
+- 方案 2：收到 joined 前主持人只在座位站起；每位成員各畫一個走路角色到 MEET[i]（:569 不要藏座位卻不畫人）。
+- 方案 3：雙方換 stand-back-0 並朝向對方；虛線走兩人頭頂高度、避開中間名牌，#2B1D16 底線加 #FFF8E6，對比 ≥3。
