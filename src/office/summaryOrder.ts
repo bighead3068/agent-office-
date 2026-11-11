@@ -115,6 +115,44 @@ export function tallyDesks(agents: readonly Pick<DeskAgent, "effectiveStatus" | 
   }
 }
 
+export const LEDGER_COUNTS = [
+  { id: "blocked", label: "受阻" },
+  { id: "failed", label: "失敗" },
+  { id: "waiting", label: "等待" },
+  { id: "unknown", label: "未知" },
+  { id: "working", label: "工作中" },
+  { id: "completed", label: "完成" },
+  { id: "idle", label: "閒置" },
+  { id: "offline", label: "離線" },
+] as const
+
+export function ledgerTotals(agents: readonly Pick<DeskAgent, "effectiveStatus">[]): Record<(typeof LEDGER_COUNTS)[number]["id"], number> {
+  const totals = {
+    blocked: 0, failed: 0, waiting: 0, unknown: 0, working: 0, completed: 0, idle: 0, offline: 0,
+  }
+  for (const agent of agents) {
+    const status = agent.effectiveStatus in totals ? agent.effectiveStatus : "unknown"
+    totals[status as keyof typeof totals] += 1
+  }
+  return totals
+}
+
+/** Attention rows: blocked, failed, waiting. Inside one status, the longest wait is first. */
+export function attentionQueue<T extends Pick<DeskAgent, "effectiveStatus" | "seat" | "agentId" | "lastReportAt">>(agents: readonly T[]): T[] {
+  const rank = new Map<string, number>(ATTENTION_ORDER.map((status, index) => [status, index]))
+  return agents
+    .filter((agent) => rank.has(agent.effectiveStatus))
+    .sort((left, right) => {
+      const waited = (left.lastReportAt ?? Number.POSITIVE_INFINITY) - (right.lastReportAt ?? Number.POSITIVE_INFINITY)
+      return (
+        (rank.get(left.effectiveStatus) ?? 0) - (rank.get(right.effectiveStatus) ?? 0) ||
+        waited ||
+        left.seat - right.seat ||
+        left.agentId.localeCompare(right.agentId)
+      )
+    })
+}
+
 export function attentionAgents<T extends Pick<DeskAgent, "effectiveStatus" | "seat" | "agentId">>(agents: readonly T[]): T[] {
   const rank = new Map<string, number>(ATTENTION_ORDER.map((status, index) => [status, index]))
   return agents

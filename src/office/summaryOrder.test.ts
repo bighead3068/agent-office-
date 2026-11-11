@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { attentionAgents, plateName, shortName, sortDesks, tallyDesks, type DeskAgent } from "./summaryOrder"
+import { attentionAgents, attentionQueue, ledgerTotals, plateName, shortName, sortDesks, tallyDesks, type DeskAgent } from "./summaryOrder"
 
 function desk(partial: Partial<DeskAgent> & Pick<DeskAgent, "agentId" | "effectiveStatus" | "seat">): DeskAgent {
   return {
@@ -60,6 +60,22 @@ describe("supervisor sort", () => {
     expect(tally.offline).toBe(1)
     expect(tally.stale).toBe(1)
     expect(tally.unseated).toBe(2)
+  })
+
+  it("puts the longest wait first inside one attention status and sums eight ledger cells", () => {
+    const agents = [
+      desk({ agentId: "new-block", effectiveStatus: "blocked", seat: 1, lastReportAt: 500 }),
+      desk({ agentId: "old-block", effectiveStatus: "blocked", seat: 2, lastReportAt: 100 }),
+      desk({ agentId: "fail", effectiveStatus: "failed", seat: 0, lastReportAt: 50 }),
+      desk({ agentId: "work", effectiveStatus: "working", seat: 3, lastReportAt: 10 }),
+    ]
+    expect(attentionQueue(agents).map((agent) => agent.agentId)).toEqual(["old-block", "new-block", "fail"])
+    const totals = ledgerTotals(agents)
+    const sum = Object.values(totals).reduce((total, value) => total + value, 0)
+    expect(sum).toBe(agents.length)
+    expect(totals.blocked).toBe(2)
+    expect(totals.failed).toBe(1)
+    expect(totals.working).toBe(1)
   })
 
   it("shortens name plates without dropping the full name contract", () => {

@@ -88,50 +88,38 @@ class Pix:
             self.px[x, y] = rgba(INK)
 
 
-def wood_floor() -> Pix:
-    img = Pix(480, 288)
-    for y in range(288):
-        for x in range(480):
-            tile_x, tile_y = x // 32, (y + 64) // 32
-            pantry = tile_x >= 12 and 2 <= tile_y <= 4
-            if pantry:
-                color = PAPER if (x // 8 + y // 8) % 2 == 0 else CREAM
-                if x % 8 == 0 or y % 8 == 0:
-                    color = WALL_D
-                img.p(x, y, color)
-                continue
-            variant = (tile_x * 3 + tile_y) % 3
-            seam = y % 8 == 0
-            knot = ((x + variant * 11) % 32 in (6, 7)) and (y % 8 in (3, 4)) and (tile_x + tile_y) % 5 == 0
-            scar = variant == 2 and 12 < (x % 32) < 18 and 2 < (y % 8) < 6 and tile_y % 3 == 1
-            grain = (x + variant + (y // 8) * 4) % 6 == 0
-            if seam:
-                color = WOOD_D
-            elif knot or scar:
-                color = WOOD_M
-            elif grain:
-                color = WOOD_L
-            else:
-                color = WOOD_H if (x + y // 8) % 4 else WOOD_L
-            img.p(x, y, color)
-    # Cool contact shade along the wall. Opaque pixels only, so the atlas stays on-palette.
-    for x in range(480):
-        if x % 2 == 0:
-            img.p(x, 0, BLUE[0])
-        elif x % 4 == 1:
-            img.p(x, 1, PLUM)
+def wood_tile(variant: int) -> Pix:
+    """16px planks, light seams, one optional knot. No 6px vertical grain."""
+    img = Pix(32, 32)
+    for y in range(32):
+        for x in range(32):
+            seam = y % 16 == 0
+            end = (x + (16 if (y // 16) % 2 else 0)) % 32 == (variant * 8)
+            img.p(x, y, WALL_M if seam else WOOD_M if end else WOOD_H)
+    knots = [(6, 6), (22, 20), (14, 8), (24, 18)]
+    kx, ky = knots[variant % 4]
+    if variant != 1:
+        img.rect(kx, ky, 2, 1, WOOD_L)
     return img
 
 
-def wall_band() -> Pix:
-    img = Pix(480, 64)
+def pantry_tile() -> Pix:
+    img = Pix(32, 32)
+    for y in range(32):
+        for x in range(32):
+            img.p(x, y, WALL_D if x % 8 == 0 or y % 8 == 0 else PAPER if (x // 8 + y // 8) % 2 == 0 else CREAM)
+    return img
+
+
+def wall_column() -> Pix:
+    img = Pix(32, 64)
     for y in range(64):
-        for x in range(480):
+        for x in range(32):
             if y >= 58:
-                color = WALL_D if y < 62 else WOOD_D
-            elif y < 8:
+                color = WALL_D if y < 62 else PALETTE[2]
+            elif y < 6:
                 color = WALL_M
-            elif (x + y * 2) % 17 == 0:
+            elif x < 2 or x > 29:
                 color = WALL_M
             else:
                 color = WALL_H
@@ -232,16 +220,70 @@ def chair() -> Pix:
     return img
 
 
-def monitor(off: bool = False) -> Pix:
+def monitor(glow: bool = False) -> Pix:
+    """Back view, three-quarter. The screen face is not visible."""
     img = Pix(24, 20)
-    img.rect(1, 0, 20, 14, METAL[0])
-    img.rect(3, 2, 16, 10, METAL[0] if off else CREAM)
-    if not off:
-        img.rect(4, 3, 6, 8, PAPER)
-        img.hline(11, 5, 6, BLUE[2])
-        img.hline(11, 8, 5, WALL_M)
-    img.rect(9, 14, 4, 3, METAL[1])
-    img.rect(6, 17, 10, 2, METAL[2])
+    img.rect(0, 2, 24, 12, METAL[0])
+    img.rect(0, 2, 24, 2, METAL[1])
+    img.rect(0, 4, 3, 10, METAL[1])
+    if glow:
+        img.rect(0, 6, 1, 6, BLUE[3])
+    img.rect(9, 14, 6, 4, METAL[1])
+    return img
+
+
+def tablet() -> Pix:
+    img = Pix(10, 8)
+    img.rect(0, 0, 10, 8, METAL[0])
+    img.rect(1, 1, 8, 6, BLUE[3])
+    return img
+
+
+def status_icon(kind: str, ink: tuple[int, int, int]) -> Pix:
+    img = Pix(12, 12)
+    if kind == "working":
+        img.rect(5, 1, 2, 10, ink)
+        img.rect(1, 5, 10, 2, ink)
+        img.p(3, 3, ink)
+        img.p(8, 3, ink)
+        img.p(3, 8, ink)
+        img.p(8, 8, ink)
+    elif kind == "waiting":
+        img.rect(3, 1, 6, 2, ink)
+        img.rect(5, 3, 2, 4, ink)
+        img.rect(3, 9, 6, 2, ink)
+    elif kind == "blocked":
+        img.rect(1, 3, 10, 2, ink)
+        img.rect(1, 7, 10, 2, ink)
+        img.rect(2, 5, 8, 2, ink)
+    elif kind == "failed":
+        img.p(3, 3, ink)
+        img.p(4, 4, ink)
+        img.p(5, 5, ink)
+        img.p(6, 6, ink)
+        img.p(7, 7, ink)
+        img.p(8, 8, ink)
+        img.p(8, 3, ink)
+        img.p(7, 4, ink)
+        img.p(4, 7, ink)
+        img.p(3, 8, ink)
+    elif kind == "completed":
+        img.p(2, 6, ink)
+        img.p(3, 7, ink)
+        img.p(4, 8, ink)
+        img.p(5, 7, ink)
+        img.p(6, 6, ink)
+        img.p(7, 5, ink)
+        img.p(8, 4, ink)
+        img.p(9, 3, ink)
+    elif kind == "unknown":
+        img.rect(5, 2, 2, 5, ink)
+        img.rect(5, 9, 2, 2, ink)
+    elif kind == "offline":
+        img.rect(2, 2, 8, 6, ink)
+        img.rect(5, 8, 2, 2, ink)
+    else:
+        img.hline(2, 6, 8, ink)
     return img
 
 
@@ -457,6 +499,9 @@ def draw_person(look: dict, pose: str, frame: int) -> Pix:
         img.rect(9, head_y, 14, 3, hair_color)
         img.rect(20, head_y + 3, 4, 8, hair_color)
         img.p(23, head_y + 8, TERRA[1])
+    elif hair == "bun":
+        img.rect(12, max(0, head_y - 5), 8, 6, PALETTE[1])
+        img.rect(9, head_y, 14, 4, hair_color)
     elif hair == "bob":
         img.rect(8, head_y + 2, 3, 8, hair_color)
         img.rect(21, head_y + 2, 3, 8, hair_color)
@@ -574,9 +619,9 @@ def draw_person(look: dict, pose: str, frame: int) -> Pix:
         img.p(23, torso_y + 12, GREEN[1])
         img.hline(24, torso_y + 10, 3, WALL_D)
     elif look["prop"] == "magnifier":
-        img.rect(24, torso_y + 8, 5, 5, BLUE[3])
-        img.rect(25, torso_y + 9, 3, 3, CREAM)
-        img.rect(27, torso_y + 12, 2, 3, WOOD_D)
+        img.rect(22, torso_y + 4, 8, 8, METAL[2])
+        img.rect(24, torso_y + 6, 4, 4, BLUE[3])
+        img.rect(25, torso_y + 12, 2, 4, PALETTE[2])
     elif look["prop"] == "swatch":
         img.rect(24, torso_y + 7, 6, 6, PAPER)
         img.p(25, torso_y + 8, TERRA[1])
@@ -609,12 +654,12 @@ LOOKS = {
         "accessory": "headphones", "prop": "none",
     },
     "designer": {
-        "skin": SKIN[2], "hair": "tie", "hairColor": INK, "top": TERRA[1], "topKind": "shirt",
-        "accessory": "none", "prop": "swatch",
+        "skin": SKIN[2], "hair": "bun", "hairColor": INK, "top": TERRA[1], "topKind": "shirt",
+        "accessory": "none", "prop": "none",
     },
     "tester": {
         "skin": SKIN[1], "hair": "bangs", "hairColor": METAL[0], "top": GREEN[1], "topKind": "shirt",
-        "accessory": "glasses", "prop": "checklist",
+        "accessory": "glasses", "prop": "magnifier",
     },
 }
 
@@ -691,8 +736,10 @@ class Atlas:
 
 def main() -> None:
     atlas = Atlas()
-    atlas.add("floor", wood_floor())
-    atlas.add("wall", wall_band())
+    for index in range(4):
+        atlas.add(f"tile-{index}", wood_tile(index))
+    atlas.add("tile-pantry", pantry_tile())
+    atlas.add("wall-column", wall_column())
     atlas.add("window", window())
     atlas.add("window-light", window_light())
     atlas.add("clock", clock())
@@ -700,8 +747,12 @@ def main() -> None:
     atlas.add("whiteboard", whiteboard())
     atlas.add("desk", desk())
     atlas.add("chair", chair())
-    atlas.add("monitor", monitor(False))
-    atlas.add("monitor-off", monitor(True))
+    atlas.add("monitor", monitor(True))
+    atlas.add("monitor-off", monitor(False))
+    atlas.add("tablet", tablet())
+    for kind in ("working", "waiting", "blocked", "failed", "completed", "unknown", "offline", "idle"):
+        atlas.add(f"icon-{kind}", status_icon(kind, PAPER))
+        atlas.add(f"icon-{kind}-ink", status_icon(kind, INK))
     atlas.add("mug", mug())
     atlas.add("papers", papers())
     atlas.add("plant-small", plant_small())
@@ -747,13 +798,46 @@ def main() -> None:
     if offenders:
         raise SystemExit(f"atlas left the palette: {sorted(offenders)[:8]}")
 
-    layers = [
-        {"sprite": "floor", "x": 0, "y": 64, "z": 0},
+    for name in ("tile-0", "tile-1", "tile-2", "tile-3", "tile-pantry"):
+        atlas.sprites[name]["tile"] = True
+    layers = []
+    for ty in range(2, 11):
+        for tx in range(15):
+            if tx >= 12 and 2 <= ty <= 4:
+                sprite = "tile-pantry"
+            else:
+                sprite = f"tile-{(tx + ty) % 4}"
+            layers.append({"sprite": sprite, "x": tx * 32, "y": ty * 32, "z": 0})
+    dark = 0
+    total = 0
+    seat = Image.new("RGBA", (384, 288), (0, 0, 0, 0))
+    for layer in layers:
+        if layer["x"] >= 384 or not (64 <= layer["y"] < 352):
+            continue
+        sprite = atlas.sprites[layer["sprite"]]
+        crop = sheet.crop((sprite["x"], sprite["y"], sprite["x"] + 32, sprite["y"] + 32))
+        seat.paste(crop, (layer["x"], layer["y"] - 64))
+    seat_px = seat.load()
+    dark_colors = {PALETTE[0], PALETTE[1], PALETTE[2], PALETTE[3]}
+    for y in range(288):
+        for x in range(384):
+            red, green, blue, alpha = seat_px[x, y]
+            if alpha == 0:
+                continue
+            total += 1
+            if (red, green, blue) in dark_colors:
+                dark += 1
+    if total == 0 or dark / total > 0.04:
+        raise SystemExit(f"seat floor is too dark: {dark}/{total}")
+    layers.extend([
         {"sprite": "rug", "x": 388, "y": 236, "z": 1},
         {"sprite": "window-light", "x": 64, "y": 150, "z": 1},
         {"sprite": "window-light", "x": 192, "y": 150, "z": 1},
         {"sprite": "window-light", "x": 320, "y": 150, "z": 1},
-        {"sprite": "wall", "x": 0, "y": 0, "z": 2},
+    ])
+    for tx in range(15):
+        layers.append({"sprite": "wall-column", "x": tx * 32, "y": 0, "z": 2})
+    layers.extend([
         {"sprite": "window", "x": 64, "y": 8, "z": 2},
         {"sprite": "window", "x": 192, "y": 8, "z": 2},
         {"sprite": "window", "x": 320, "y": 8, "z": 2},
@@ -768,7 +852,7 @@ def main() -> None:
         {"sprite": "plant-big", "x": 448, "y": 270, "z": 4},
         {"sprite": "hanging", "x": 448, "y": 64, "z": 9},
         {"sprite": "plant-big", "x": 8, "y": 300, "z": 9},
-    ]
+    ])
     anchors = [(64, 128), (160, 128), (256, 128), (352, 128), (64, 288), (160, 288), (256, 288), (352, 288)]
     clutter = ["mug", "papers", "plant-small", "prop-bottle", "prop-tape", "prop-pens", "prop-paper", "mug"]
     seats = []
@@ -780,7 +864,7 @@ def main() -> None:
             "anchor": [ax, ay],
             "chair": {"sprite": "chair", "x": ax - 16, "y": ay - 28},
             "desk": {"sprite": "desk", "x": ax - 32, "y": ay},
-            "monitor": {"sprite": "monitor", "x": ax - 20, "y": ay - 16},
+            "monitor": {"sprite": "monitor", "x": ax - 20, "y": ay - 18},
             "clutter": {"sprite": clutter[index], "x": ax + 8, "y": ay - 6},
         })
     manifest = {
@@ -794,18 +878,12 @@ def main() -> None:
         "seats": seats,
         "character": {
             "frame": {"w": 32, "h": 48},
-            "origin": {"x": -16, "y": -32},
-            "assignments": [
-                {"id": "lin", "look": "coordinator"},
-                {"id": "chen", "look": "developer"},
-                {"id": "gao", "look": "designer"},
-                {"id": "fang", "look": "tester"},
-            ],
-            "rules": [
-                {"includes": ["協調", "調度"], "look": "coordinator"},
-                {"includes": ["開發", "程式"], "look": "developer"},
-                {"includes": ["設計", "視覺"], "look": "designer"},
-                {"includes": ["測試", "品質"], "look": "tester"},
+            "origin": {"x": -16, "y": -42},
+            "idPrefixes": [
+                {"prefix": "5be5c071", "look": "coordinator"},
+                {"prefix": "7a961a88", "look": "developer"},
+                {"prefix": "892250dc", "look": "designer"},
+                {"prefix": "cf8d7f4a", "look": "tester"},
             ],
             "hashLooks": [f"hash-{index}" for index in range(8)],
             "animations": animations,
@@ -816,7 +894,7 @@ def main() -> None:
                 "wait": {"fps": 3, "loop": "loop", "holdMs": 2000},
                 "blocked": {"fps": 4, "loop": "once"},
                 "fail": {"fps": 6, "loop": "once"},
-                "stretch": {"fps": 8, "loop": "once", "then": "sit"},
+                "stretch": {"fps": 6, "loop": "once", "then": "sit"},
                 "sit": {"fps": 1, "loop": "once"},
                 "coffee": {"fps": 6, "loop": "once", "maxMs": 8000},
                 "tend": {"fps": 6, "loop": "once", "maxMs": 8000},
@@ -835,8 +913,8 @@ def main() -> None:
             },
             "eggs": ["coffee", "tend", "stretch", "nap", "pen"],
             "lookProps": {
-                "developer": [{"sprite": "monitor", "dx": 14, "dy": -16}],
-                "designer": [{"sprite": "prop-paper", "dx": -28, "dy": -4}],
+                "developer": [{"sprite": "monitor", "dx": 14, "dy": -18}],
+                "designer": [{"sprite": "tablet", "dx": -28, "dy": -8}],
                 "coordinator": [{"sprite": "prop-pens", "dx": 22, "dy": -4}],
                 "tester": [{"sprite": "prop-tape", "dx": 22, "dy": -4}],
             },
@@ -844,6 +922,32 @@ def main() -> None:
             "sweat": ["sweat-0", "sweat-1"],
         },
     }
+    person_name = animations["coordinator"]["type"][0]
+    person = atlas.sprites[person_name]
+    person_img = sheet.crop((person["x"], person["y"], person["x"] + 32, person["y"] + 48))
+    desk_sprite = atlas.sprites["desk"]
+    mon = atlas.sprites["monitor"]
+    desk_img = sheet.crop((desk_sprite["x"], desk_sprite["y"], desk_sprite["x"] + 64, desk_sprite["y"] + 40))
+    mon_img = sheet.crop((mon["x"], mon["y"], mon["x"] + 24, mon["y"] + 20))
+    cover = Image.new("L", (80, 80), 0)
+    cover.paste(255, (0, 42), desk_img.split()[-1])
+    cover.paste(255, (12, 24), mon_img.split()[-1])
+    visible = 0
+    opaque = 0
+    face_blocked = 0
+    src = person_img.load()
+    mask = cover.load()
+    for y in range(48):
+        for x in range(32):
+            if src[x, y][3] == 0:
+                continue
+            opaque += 1
+            if mask[x + 16, y] == 0:
+                visible += 1
+            elif 5 <= y <= 20:
+                face_blocked += 1
+    if opaque == 0 or visible / opaque < 0.60 or face_blocked:
+        raise SystemExit(f"character visibility {visible}/{opaque}, face blocked {face_blocked}")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     sheet.save(OUT_DIR / "office-atlas.png")
     (OUT_DIR / "office-atlas.json").write_text(json.dumps(manifest, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")

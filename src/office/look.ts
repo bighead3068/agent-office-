@@ -1,7 +1,6 @@
 export interface LookManifest {
   character: {
-    assignments: { id: string; look: string }[]
-    rules: { includes: string[]; look: string }[]
+    idPrefixes: { prefix: string; look: string }[]
     hashLooks: string[]
   }
 }
@@ -16,13 +15,10 @@ export function hashId(id: string): number {
   return hash >>> 0
 }
 
-export function resolveLook(agentId: string, name: string, manifest: LookManifest): string {
-  const assigned = manifest.character.assignments.find((item) => item.id === agentId)
+/** Known looks come from an agentId prefix map. Anything else is a stable hash. */
+export function resolveLook(agentId: string, _name: string, manifest: LookManifest): string {
+  const assigned = manifest.character.idPrefixes.find((item) => agentId.startsWith(item.prefix))
   if (assigned) return assigned.look
-  const haystack = `${agentId} ${name}`
-  for (const rule of manifest.character.rules) {
-    if (rule.includes.some((part) => haystack.includes(part))) return rule.look
-  }
   const looks = manifest.character.hashLooks
   return looks[hashId(agentId) % looks.length] ?? looks[0] ?? "coordinator"
 }

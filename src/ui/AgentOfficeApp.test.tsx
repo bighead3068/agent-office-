@@ -84,8 +84,8 @@ describe("v0.2 office", () => {
     const names = within(summary).getAllByRole("button").flatMap((button) => button.querySelector("b")?.textContent ?? [])
     expect(names).toEqual(["卡住", "失敗bot"])
     expect(names).not.toContain("在做")
-    expect(within(summary).getByText("受阻")).toBeTruthy()
-    expect(within(summary).getByText("失敗")).toBeTruthy()
+    expect(within(summary).getAllByText("受阻").length).toBeGreaterThan(0)
+    expect(within(summary).getAllByText("失敗").length).toBeGreaterThan(0)
     const failed = screen.getByTestId("agent-fail")
     expect(failed).toHaveAttribute("data-status", "failed")
     expect(failed).toHaveTextContent("失敗")
@@ -103,11 +103,14 @@ describe("v0.2 office", () => {
     const counts = Object.fromEntries(
       [...document.querySelectorAll(".count-cell")].map((node) => [node.getAttribute("data-count"), node.querySelector("strong")?.textContent]),
     )
-    expect(counts.stuck).toBe("2")
+    expect(counts.blocked).toBe("1")
+    expect(counts.failed).toBe("1")
     expect(counts.working).toBe("1")
     expect(counts.waiting).toBe("0")
     expect(counts.completed).toBe("1")
     expect(counts.unknown).toBe("1")
+    expect(counts.idle).toBe("0")
+    expect(counts.offline).toBe("0")
     expect(screen.getByTestId("summary-total").textContent).toContain("共 5 人，分格加總 5")
   })
 

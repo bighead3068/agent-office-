@@ -59,6 +59,7 @@ function RealOffice() {
         onSelect={setSelectedId}
         now={snapshot.data?.serverNow}
         sourceLabel="Bot自行回報"
+        disconnected={snapshot.error != null}
       />
     </div>
   )
@@ -75,10 +76,10 @@ const SIM_ACTIONS: { id: SimAction; label: string }[] = [
 ]
 
 const BOARD: DeskAgent[] = [
-  { agentId: "coord", name: "Agent Office 協調", seat: 0, effectiveStatus: "working", lastKnownStatus: "working", freshness: "fresh", taskTitle: "排今天的會議並且把每個人的下一件事寫成一行很長的標題", terminalAt: null, lastReportAt: 1_700_000_000_000, reason: "report" },
-  { agentId: "dev", name: "Agent Office 開發", seat: 1, effectiveStatus: "waiting", lastKnownStatus: "waiting", freshness: "fresh", taskTitle: "等編譯結果，這行也刻意寫得很長以免相鄰座位的任務條疊在一起", terminalAt: null, lastReportAt: 1_700_000_000_000, reason: "report" },
-  { agentId: "des", name: "Agent Office 設計", seat: 2, effectiveStatus: "blocked", lastKnownStatus: "blocked", freshness: "fresh", taskTitle: "等色票", terminalAt: null, lastReportAt: 1_700_000_000_000, reason: "report" },
-  { agentId: "qa", name: "測試助手", seat: 3, effectiveStatus: "failed", lastKnownStatus: "failed", freshness: "fresh", taskTitle: "測試紅了", terminalAt: 1_700_000_000_000, lastReportAt: 1_700_000_000_000, reason: "report" },
+  { agentId: "5be5c071-coord", name: "Agent Office 協調", seat: 0, effectiveStatus: "working", lastKnownStatus: "working", freshness: "fresh", taskTitle: "排今天的會議並且把每個人的下一件事寫成一行很長的標題", terminalAt: null, lastReportAt: 1_700_000_000_000, reason: "report" },
+  { agentId: "7a961a88-dev", name: "Agent Office 開發", seat: 1, effectiveStatus: "waiting", lastKnownStatus: "waiting", freshness: "fresh", taskTitle: "等編譯結果，這行也刻意寫得很長以免相鄰座位的任務條疊在一起", terminalAt: null, lastReportAt: 1_700_000_000_000, reason: "report" },
+  { agentId: "892250dc-des", name: "Agent Office 設計", seat: 2, effectiveStatus: "blocked", lastKnownStatus: "blocked", freshness: "fresh", taskTitle: "等色票", terminalAt: null, lastReportAt: 1_699_000_000_000, reason: "report" },
+  { agentId: "cf8d7f4a-qa", name: "測試助手", seat: 3, effectiveStatus: "failed", lastKnownStatus: "failed", freshness: "fresh", taskTitle: "測試紅了", terminalAt: 1_700_000_000_000, lastReportAt: 1_700_000_000_000, reason: "report" },
   { agentId: "done", name: "完工", seat: 4, effectiveStatus: "completed", lastKnownStatus: "completed", freshness: "fresh", taskTitle: "交卷", terminalAt: 1_699_999_000_000, lastReportAt: 1_699_999_000_000, reason: "report" },
   { agentId: "miss", name: "過期席", seat: 5, effectiveStatus: "unknown", lastKnownStatus: "completed", freshness: "stale", taskTitle: "上次的交卷", terminalAt: 1_699_994_000_000, lastReportAt: 1_699_994_000_000, reason: "ttl" },
   { agentId: "off", name: "離線", seat: 6, effectiveStatus: "offline", lastKnownStatus: "offline", freshness: "fresh", taskTitle: "不在座位", terminalAt: null, lastReportAt: 1_699_990_000_000, reason: "disconnect", disconnected: true },
@@ -86,11 +87,14 @@ const BOARD: DeskAgent[] = [
 ]
 
 function DemoOffice() {
-  const cast = new URLSearchParams(useSearch()).get("cast")
+  const search = useSearch()
+  const cast = new URLSearchParams(search).get("cast")
+  const openMenu = new URLSearchParams(search).get("menu") === "open"
+  const linkDown = new URLSearchParams(search).get("link") === "down"
   const boot = useRef({ now: Date.now(), nonce: 1 })
   const [office, setOffice] = useState<OfficeState>(() => createScenario("opening", boot.current.now))
   const [scenario, setScenario] = useState<ScenarioId>("opening")
-  const [selectedId, setSelectedId] = useState("lin")
+  const [selectedId, setSelectedId] = useState(() => (new URLSearchParams(search).get("open") === "a4" ? "cf8d7f4a-qa" : "lin"))
   const [notice, setNotice] = useState<string | null>(null)
   const nonce = useRef(10)
 
@@ -119,7 +123,9 @@ function DemoOffice() {
       </header>
       <p className="sr-only">看泡泡就知道誰在做事、誰卡住、誰做完、誰未知。這頁是模擬。</p>
       {cast === "board"
-        ? <OfficeFloor agents={BOARD} selectedId={selectedId} onSelect={setSelectedId} demo sourceLabel="模擬" now={1_700_000_000_000} />
+        ? <OfficeFloor agents={BOARD} selectedId={selectedId} onSelect={setSelectedId} demo sourceLabel="模擬" now={1_700_000_000_000} disconnected={linkDown} menuOpen={openMenu} />
+        : cast === "clear"
+          ? <OfficeFloor agents={BOARD.map((agent) => ({ ...agent, effectiveStatus: "working", lastKnownStatus: "working", freshness: "fresh" }))} selectedId={selectedId} onSelect={setSelectedId} demo now={1_700_000_000_000} />
         : <OfficeFloor agents={agents} selectedId={selectedId} onSelect={setSelectedId} demo sourceLabel="模擬" />}
       {cast === "board" ? null : (
       <details className="sim" data-testid="sim-panel">

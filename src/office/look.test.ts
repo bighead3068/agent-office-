@@ -10,12 +10,13 @@ describe("character looks", () => {
     expect(manifest.character.hashLooks).toContain(first)
   })
 
-  it("uses the four fixed looks for the named bots", () => {
-    expect(resolveLook("lin", "林知夏", manifest)).toBe("coordinator")
-    expect(resolveLook("chen", "陳墨白", manifest)).toBe("developer")
-    expect(resolveLook("gao", "高小滿", manifest)).toBe("designer")
-    expect(resolveLook("fang", "方寧遠", manifest)).toBe("tester")
-    expect(resolveLook("other", "協調助手", manifest)).toBe("coordinator")
-    expect(resolveLook("other", "開發助手", manifest)).toBe("developer")
+  it("maps the four known bots by agentId prefix, not by display name", () => {
+    expect(resolveLook("5be5c071-any", "隨便", manifest)).toBe("coordinator")
+    expect(resolveLook("7a961a88-any", "隨便", manifest)).toBe("developer")
+    expect(resolveLook("892250dc-any", "隨便", manifest)).toBe("designer")
+    expect(resolveLook("cf8d7f4a-any", "隨便", manifest)).toBe("tester")
+    const named = resolveLook("other-bot", "協調助手", manifest)
+    expect(named).not.toBe("coordinator")
+    expect(manifest.character.hashLooks).toContain(named)
   })
 })
