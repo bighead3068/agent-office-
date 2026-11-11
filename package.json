@@ -9,6 +9,7 @@
     "preview": "vite preview --host 127.0.0.1 --port 43123 --strictPort",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "art": "python3 scripts/paint-office-atlas.py",
     "office": "node scripts/start-office.mjs",
     "office:register": "node scripts/register-agent.mjs",
     "standalone": "npm run build && node scripts/build-standalone.mjs"

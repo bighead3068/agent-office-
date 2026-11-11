@@ -1,4 +1,7 @@
-import { useEffect, useState } from "react"
+import { useEffect, useState, type CSSProperties } from "react"
+import atlasUrl from "../../public/art/office-atlas.png"
+import manifest from "../../public/art/office-atlas.json"
+import { resolveLook } from "../office/look"
 import {
   ATTENTION_ORDER,
   COUNT_CELLS,
@@ -12,26 +15,15 @@ import {
 import { formatReportTime } from "./reportConnection"
 import "./OfficeFloor.css"
 
-const TILE = 16
-const COLUMNS = 22
-const ROWS = 16
+const SCALE = 2
 const SEAT_CAP = 8
 const ATTENTION_CAP = 4
+const SCENE_W = manifest.scene.cols * manifest.tile * SCALE
+const SCENE_H = manifest.scene.rows * manifest.tile * SCALE
 
-const SEATS = [
-  { id: "A1", x: 2, y: 5 },
-  { id: "A2", x: 7, y: 5 },
-  { id: "A3", x: 12, y: 5 },
-  { id: "A4", x: 17, y: 5 },
-  { id: "B1", x: 2, y: 12 },
-  { id: "B2", x: 7, y: 12 },
-  { id: "B3", x: 12, y: 12 },
-  { id: "B4", x: 17, y: 12 },
-] as const
+type PoseName = keyof typeof manifest.character.poses
 
-const SHIRTS = ["#3E8ED0", "#E5A41F", "#5AA552", "#D9483B", "#7B6FA8", "#3F7A35", "#8A5A2B", "#6E5440"]
-
-function useTier(): "x3" | "x2" | "compact" {
+function useViewport(): { width: number; height: number } {
   const [size, setSize] = useState(() => (
     typeof window === "undefined"
       ? { width: 1440, height: 900 }
@@ -43,9 +35,14 @@ function useTier(): "x3" | "x2" | "compact" {
     window.addEventListener("resize", apply)
     return () => window.removeEventListener("resize", apply)
   }, [])
-  if (size.width >= 1400 && size.height >= 900) return "x3"
-  if (size.width >= 1024) return "x2"
-  return "compact"
+  return size
+}
+
+function tierOf(width: number): "cards" | "bar" | "desk" | "wide" {
+  if (width < 1024) return "cards"
+  if (width < 1280) return "bar"
+  if (width < 1440) return "desk"
+  return "wide"
 }
 
 function useReducedMotion(): boolean {
@@ -60,61 +57,93 @@ function useReducedMotion(): boolean {
   return reduced
 }
 
-function PixelPerson({ index, muted, tall }: { index: number; muted: boolean; tall: number }) {
-  const shirt = SHIRTS[index % SHIRTS.length] ?? "#3E8ED0"
-  return (
-    <svg className={muted ? "pixel-person is-muted" : "pixel-person"} viewBox="0 0 16 20" style={{ height: tall, width: Math.round(tall * 0.8) }} shapeRendering="crispEdges" aria-hidden="true">
-      <rect x="4" y="1" width="8" height="3" fill="#3B2A20" />
-      <rect x="5" y="3" width="6" height="5" fill="#F0C29A" />
-      <rect x="6" y="5" width="1" height="1" fill="#3B2A20" />
-      <rect x="9" y="5" width="1" height="1" fill="#3B2A20" />
-      <rect x="3" y="8" width="10" height="6" fill={shirt} />
-      <rect x="2" y="8" width="2" height="4" fill="#E0AA78" />
-      <rect x="12" y="8" width="2" height="4" fill="#E0AA78" />
-      <rect x="5" y="14" width="2" height="4" fill="#5C4636" />
-      <rect x="9" y="14" width="2" height="4" fill="#5C4636" />
-    </svg>
-  )
+function spriteStyle(name: string, x: number, y: number): CSSProperties {
+  const sprite = manifest.sprites[name as keyof typeof manifest.sprites]
+  if (!sprite) return { display: "none" }
+  return {
+    position: "absolute",
+    left: x * SCALE,
+    top: y * SCALE,
+    width: sprite.w * SCALE,
+    height: sprite.h * SCALE,
+    backgroundImage: `url(${atlasUrl})`,
+    backgroundRepeat: "no-repeat",
+    backgroundPosition: `${-sprite.x * SCALE}px ${-sprite.y * SCALE}px`,
+    backgroundSize: `${manifest.size.w * SCALE}px ${manifest.size.h * SCALE}px`,
+    imageRendering: "pixelated",
+    pointerEvents: "none",
+  }
 }
 
-function StatusIcon({ status }: { status: string }) {
-  if (status === "working") {
-    return (
-      <svg className="bubble-icon gear" viewBox="0 0 20 20" aria-hidden="true">
-        <circle cx="10" cy="10" r="3" fill="currentColor" />
-        <path fill="currentColor" d="M9 1h2v3h-2zm0 15h2v3h-2zM1 9h3v2H1zm15 0h3v2h-3zM3.5 3.5l2 2-1.4 1.4-2-2zm12.4 12.4 2 2-1.4 1.4-2-2zM3.5 16.5l1.4-1.4 2 2-1.4 1.4zM15.1 4.9l1.4-1.4 2 2-1.4 1.4z" />
-      </svg>
-    )
-  }
-  if (status === "waiting") {
-    return (
-      <svg className="bubble-icon" viewBox="0 0 20 20" aria-hidden="true">
-        <path fill="currentColor" d="M5 2h10v2H5zm1 3h8l-4 4 4 4H6l4-4zm-1 10h10v2H5z" />
-      </svg>
-    )
-  }
-  if (status === "failed") {
-    return <span className="bubble-icon glyph" aria-hidden="true">✕</span>
-  }
-  if (status === "completed") {
-    return (
-      <svg className="bubble-icon" viewBox="0 0 20 20" aria-hidden="true">
-        <path fill="currentColor" d="M4 10.5 8 14.5 16 5.5l1.5 1.4L8 17.5 2.5 12z" />
-      </svg>
-    )
-  }
-  if (status === "unknown") {
-    return <span className="bubble-icon glyph" aria-hidden="true">?</span>
-  }
-  if (status === "offline") {
-    return (
-      <svg className="bubble-icon" viewBox="0 0 20 20" aria-hidden="true">
-        <path fill="currentColor" d="M7 2h6v4h4v2H11v2h5v2H4v-2h5V8H3V6h4z" />
-      </svg>
-    )
-  }
-  if (status === "idle") return <span className="bubble-icon glyph" aria-hidden="true">—</span>
-  return <span className="bubble-icon glyph" aria-hidden="true">!</span>
+function pingpong(index: number, count: number): number {
+  const cycle = Math.max(1, count * 2 - 2)
+  const pos = index % cycle
+  return pos < count ? pos : cycle - pos
+}
+
+function usePose(look: string, status: string, fresh: boolean, reduced: boolean, agentId: string): { pose: string; frame: number } {
+  const base = manifest.character.statusPose[status as keyof typeof manifest.character.statusPose] ?? "breathe"
+  const [pose, setPose] = useState(base)
+  const [frame, setFrame] = useState(0)
+  useEffect(() => {
+    setPose(base)
+    setFrame(0)
+    if (reduced || status === "unknown" || status === "offline") return
+    let stopped = false
+    let current = base
+    let cursor = 0
+    let holdLeft = 0
+    let eggUntil = 0
+    const timers: number[] = []
+    const framesOf = (name: string) => manifest.character.animations[look as keyof typeof manifest.character.animations][name as PoseName].length
+    const step = () => {
+      if (stopped) return
+      const now = Date.now()
+      if (status === "idle" && fresh && eggUntil === 0 && current === "breathe") {
+        const egg = manifest.character.eggs[agentId.length % manifest.character.eggs.length] ?? "coffee"
+        current = egg
+        cursor = 0
+        eggUntil = now + 8000
+      }
+      if (eggUntil > 0 && now >= eggUntil) {
+        current = "breathe"
+        cursor = 0
+        eggUntil = -1
+      }
+      const spec = manifest.character.poses[current as PoseName] as { fps: number; loop: string; then?: string; holdMs?: number }
+      const count = framesOf(current)
+      if (holdLeft > 0) {
+        holdLeft -= Math.round(1000 / spec.fps)
+        setPose(current)
+        setFrame(0)
+      } else if (spec.loop === "once") {
+        cursor = Math.min(count - 1, cursor + 1)
+        setPose(current)
+        setFrame(cursor)
+        if (cursor >= count - 1 && spec.then) {
+          current = spec.then
+          cursor = 0
+        }
+      } else if (spec.loop === "pingpong") {
+        cursor += 1
+        setPose(current)
+        setFrame(pingpong(cursor, count))
+      } else {
+        cursor = (cursor + 1) % count
+        setPose(current)
+        setFrame(cursor)
+        if (cursor === 0 && spec.holdMs) holdLeft = spec.holdMs
+      }
+      const nextFps = (manifest.character.poses[current as PoseName] as { fps: number }).fps
+      timers.push(window.setTimeout(step, Math.round(1000 / nextFps)))
+    }
+    timers.push(window.setTimeout(step, Math.round(1000 / manifest.character.poses[current as PoseName].fps)))
+    return () => {
+      stopped = true
+      for (const timer of timers) window.clearTimeout(timer)
+    }
+  }, [agentId, base, fresh, look, reduced, status])
+  return { pose, frame }
 }
 
 const PREVIOUS_WORD: Record<string, string> = {
@@ -133,6 +162,12 @@ function previousLine(agent: DeskAgent): string | null {
   return word ? `上次：${word}` : null
 }
 
+function staleMinutes(agent: DeskAgent, now: number): number | null {
+  if (agent.freshness !== "stale" || agent.lastReportAt == null) return null
+  const minutes = Math.floor((now - agent.lastReportAt) / 60_000)
+  return minutes >= 1 ? minutes : null
+}
+
 function bubbleCopy(agent: DeskAgent, now: number): string {
   if (agent.freshness === "stale") return "未知"
   if (agent.effectiveStatus === "completed") {
@@ -146,27 +181,15 @@ function bubbleCopy(agent: DeskAgent, now: number): string {
   return STATUS_LABEL[agent.effectiveStatus] ?? "未知"
 }
 
-function SceneArt() {
-  return (
-    <svg className="scene-art" viewBox="0 0 22 16" shapeRendering="crispEdges" aria-hidden="true">
-      <rect width="22" height="4.2" fill="#E8D5A8" />
-      <rect y="4.2" width="22" height="0.35" fill="#8A5A2B" />
-      <rect y="4.55" width="22" height="11.45" fill="#C8945A" />
-      <rect x="0" y="6" width="22" height="0.08" fill="#A86E3C" />
-      <rect x="0" y="9" width="22" height="0.08" fill="#A86E3C" />
-      <rect x="0" y="12" width="22" height="0.08" fill="#A86E3C" />
-      <rect x="1" y="0.6" width="3" height="2.2" fill="#FFE9A8" stroke="#8A5A2B" strokeWidth="0.12" />
-      <rect x="8" y="0.6" width="3" height="2.2" fill="#FFE9A8" stroke="#8A5A2B" strokeWidth="0.12" />
-      <rect x="14.2" y="0.5" width="2.4" height="3.2" fill="#8A5A2B" />
-      <rect x="14.45" y="0.8" width="1.9" height="0.45" fill="#5AA552" />
-      <rect x="14.45" y="1.45" width="1.9" height="0.45" fill="#3E8ED0" />
-      <rect x="14.45" y="2.1" width="1.9" height="0.45" fill="#E5A41F" />
-      <rect x="0.4" y="1.2" width="0.35" height="1.5" fill="#3F7A35" />
-      <rect x="0.15" y="0.7" width="0.9" height="0.7" fill="#5E9E4A" />
-      <rect x="20.6" y="15.15" width="1.2" height="0.7" fill="#B8574A" />
-      <rect x="20.75" y="14.85" width="0.45" height="0.35" fill="#FFF6DD" stroke="#3B2A20" strokeWidth="0.06" />
-    </svg>
-  )
+function StatusIcon({ status }: { status: string }) {
+  if (status === "failed") return <span className="bubble-icon glyph" aria-hidden="true">✕</span>
+  if (status === "blocked") return <span className="bubble-icon glyph" aria-hidden="true">⛔</span>
+  if (status === "unknown") return <span className="bubble-icon glyph" aria-hidden="true">?</span>
+  if (status === "completed") return <span className="bubble-icon glyph" aria-hidden="true">✓</span>
+  if (status === "waiting") return <span className="bubble-icon glyph" aria-hidden="true">⏳</span>
+  if (status === "offline") return <span className="bubble-icon glyph" aria-hidden="true">⏻</span>
+  if (status === "idle") return <span className="bubble-icon glyph" aria-hidden="true">–</span>
+  return <span className="bubble-icon glyph" aria-hidden="true">⚙</span>
 }
 
 function DetailCard({
@@ -174,21 +197,63 @@ function DetailCard({
   stamp,
   demo,
   sourceLabel,
+  left,
+  top,
 }: {
   agent: DeskAgent
   stamp: number
   demo: boolean
   sourceLabel: string
+  left: number
+  top: number
 }) {
   const previous = previousLine(agent)
   return (
-    <article className="detail-card" data-testid="detail-card">
+    <article className="detail-card" data-testid="detail-card" style={{ left, top }}>
       <h3>{agent.name}</h3>
       <p className="detail-task">{agent.taskTitle || "尚未回報"}</p>
       <p>{bubbleCopy(agent, stamp)}{previous ? ` · ${previous}` : ""}</p>
       <p className="detail-meta">來源 {demo ? "模擬" : sourceLabel}</p>
       <p className="detail-meta">{agent.lastReportAt == null && agent.terminalAt == null ? "尚未更新" : formatReportTime((agent.lastReportAt ?? agent.terminalAt) as number)}</p>
     </article>
+  )
+}
+
+function SeatActor({
+  agent,
+  anchor,
+  reduced,
+}: {
+  agent: DeskAgent
+  anchor: readonly number[]
+  reduced: boolean
+}) {
+  const look = resolveLook(agent.agentId, agent.name, manifest)
+  const { pose, frame } = usePose(look, agent.effectiveStatus, agent.freshness === "fresh", reduced, agent.agentId)
+  const frames = manifest.character.animations[look as keyof typeof manifest.character.animations][pose as PoseName]
+    ?? manifest.character.animations[look as keyof typeof manifest.character.animations].breathe
+  const sprite = frames[Math.min(frame, frames.length - 1)] ?? frames[0]
+  const origin = manifest.character.origin
+  const muted = agent.effectiveStatus === "unknown" || agent.effectiveStatus === "offline" || agent.freshness === "stale"
+  const sweat = !reduced && agent.effectiveStatus === "blocked" && agent.freshness === "fresh"
+    ? manifest.character.sweat[frame % manifest.character.sweat.length]
+    : null
+  return (
+    <>
+      <div
+        data-look={look}
+        data-pose={reduced ? "still" : pose}
+        data-frame={reduced ? 0 : frame}
+        style={{
+          ...spriteStyle(sprite, anchor[0] + origin.x, anchor[1] + origin.y),
+          opacity: agent.effectiveStatus === "unknown" || agent.freshness === "stale" ? 0.5 : 1,
+          filter: agent.effectiveStatus === "offline" ? "grayscale(1)" : undefined,
+          zIndex: 6,
+        }}
+        className={muted ? "actor is-muted" : "actor"}
+      />
+      {sweat ? <div style={{ ...spriteStyle(sweat, anchor[0] + origin.x, anchor[1] + origin.y), zIndex: 6 }} /> : null}
+    </>
   )
 }
 
@@ -207,11 +272,9 @@ export function OfficeFloor({
   now?: number | null
   sourceLabel?: string
 }) {
-  const tier = useTier()
+  const viewport = useViewport()
+  const tier = tierOf(viewport.width)
   const reduced = useReducedMotion()
-  const scale = tier === "x3" ? 3 : 2
-  const panelWidth = tier === "x2" ? 288 : 320
-  const compact = tier === "compact"
   const [moreOpen, setMoreOpen] = useState(false)
   const stamp = now ?? Date.now()
   const tally = tallyDesks(agents)
@@ -220,7 +283,7 @@ export function OfficeFloor({
   const hiddenAttention = attention.slice(ATTENTION_CAP)
   const bySeat = new Map(agents.filter((agent) => agent.seat >= 0 && agent.seat < SEAT_CAP).map((agent) => [agent.seat, agent]))
   const selected = agents.find((agent) => agent.agentId === selectedId) ?? null
-  const sceneStyle = { width: COLUMNS * TILE * scale, height: ROWS * TILE * scale }
+  const showScene = tier !== "cards"
 
   function choose(id: string) {
     onSelect?.(id)
@@ -249,7 +312,7 @@ export function OfficeFloor({
         {visibleAttention.map((agent) => (
           <li key={agent.agentId}>
             <button type="button" className="attention-row" onClick={() => choose(agent.agentId)}>
-              <span className={`count-bar attention-bar count-${agent.effectiveStatus === "failed" ? "stuck" : agent.effectiveStatus === "waiting" ? "waiting" : "stuck"}`} />
+              <span className={`count-bar attention-bar count-${agent.effectiveStatus === "waiting" ? "waiting" : "stuck"}`} />
               <b title={agent.name}>{plateName(agent.name)}</b>
               <span className="attention-word">{agent.effectiveStatus === "blocked" ? "受阻" : agent.effectiveStatus === "failed" ? "失敗" : "等待"}</span>
               <span className="attention-task">{agent.taskTitle || "尚未回報"}</span>
@@ -267,93 +330,148 @@ export function OfficeFloor({
   )
 
   const summary = (
-    <aside className="summary-dock" data-testid="summary-panel" aria-label="主管摘要" style={compact ? undefined : { width: panelWidth }}>
+    <aside className="summary-dock" data-testid="summary-panel" aria-label="主管摘要">
       <h2>主管摘要（唯讀）</h2>
       {counts}
-      {compact ? (
+      {tier === "bar" || tier === "cards" ? (
         <button type="button" className="more-btn" onClick={() => setMoreOpen(true)}>
           需要注意 {attention.length}
         </button>
       ) : attentionBlock}
-      <p className="summary-secondary" data-testid="summary-secondary">
-        閒置 {tally.idle} · 離線 {tally.offline} · 過期 {tally.stale} · 未入座 {tally.unseated}
-      </p>
+      {tier === "bar" || tier === "cards" ? null : (
+        <p className="summary-secondary" data-testid="summary-secondary">
+          閒置 {tally.idle} · 離線 {tally.offline} · 過期 {tally.stale} · 未入座 {tally.unseated}
+        </p>
+      )}
       <p className="summary-foot">資料來源：{demo ? "模擬" : "Bot自行回報（非平台原生）"} · 更新 {new Intl.DateTimeFormat("zh-TW", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "Asia/Taipei" }).format(stamp)}</p>
-      {selected ? <DetailCard agent={selected} stamp={stamp} demo={demo} sourceLabel={sourceLabel} /> : null}
       <p className="sr-only" data-testid="summary-total">共 {tally.total} 人，分格加總 {tally.cells.stuck + tally.cells.working + tally.cells.waiting + tally.cells.completed + tally.cells.unknown + tally.idle + tally.offline}</p>
     </aside>
   )
 
+  const selectedSeat = selected ? manifest.seats.find((seat) => seat.index === selected.seat) : undefined
+  const cardLeft = selectedSeat
+    ? Math.max(0, Math.min(SCENE_W - 280, selectedSeat.column < 2 ? selectedSeat.anchor[0] * SCALE + 72 : selectedSeat.anchor[0] * SCALE - 72 - 280))
+    : 0
+  const cardTop = selectedSeat ? Math.max(8, selectedSeat.anchor[1] * SCALE - 140) : 0
+
   return (
-    <div className={demo ? "office-v2 is-demo" : "office-v2"} data-view={demo ? "demo" : "real"} data-tier={tier} data-reduced={reduced ? "true" : "false"}>
-      <div className="scene-wrap">
-        <div className="scene" data-testid="office-floor" data-scale={scale} style={sceneStyle}>
-          <SceneArt />
-          {SEATS.map((slot, index) => {
-            const agent = bySeat.get(index) ?? null
-            const unit = TILE * scale
-            const headOverflow = scale === 3 ? 24 : 16
-            const charH = 2 * unit + headOverflow
-            const bubbleTop = -(36 + 4 + 24 + 6 + headOverflow)
-            const taskTop = bubbleTop + 36 + 4
-            const taskW = Math.min(216, 5 * unit - 16)
+    <div className={demo ? "office-v2 is-demo" : "office-v2"} data-view={demo ? "demo" : "real"} data-tier={tier} data-reduced={reduced ? "true" : "false"} data-scale={showScene ? SCALE : 1}>
+      {summary}
+      {showScene ? (
+        <div className="scene-wrap">
+          <div className="scene" data-testid="office-floor" data-scale={SCALE} style={{ width: SCENE_W, height: SCENE_H }}>
+            {manifest.layers.filter((layer) => layer.z < 5).map((layer) => (
+              <div key={`${layer.sprite}-${layer.x}-${layer.y}`} style={{ ...spriteStyle(layer.sprite, layer.x, layer.y), zIndex: layer.z }} />
+            ))}
+            {manifest.seats.map((seat) => (
+              <div key={`${seat.id}-chair`} style={{ ...spriteStyle(seat.chair.sprite, seat.chair.x, seat.chair.y), zIndex: 5 }} />
+            ))}
+            {manifest.seats.map((seat) => {
+              const agent = bySeat.get(seat.index)
+              if (!agent) return null
+              return <SeatActor key={agent.agentId} agent={agent} anchor={seat.anchor} reduced={reduced} />
+            })}
+            {manifest.seats.map((seat) => {
+              const agent = bySeat.get(seat.index)
+              const monitor = agent?.effectiveStatus === "offline" ? "monitor-off" : seat.monitor.sprite
+              const look = agent ? resolveLook(agent.agentId, agent.name, manifest) : ""
+              const extras = look ? manifest.character.lookProps[look as keyof typeof manifest.character.lookProps] ?? [] : []
+              return (
+                <div key={`${seat.id}-desk`}>
+                  <div style={{ ...spriteStyle(seat.desk.sprite, seat.desk.x, seat.desk.y), zIndex: 7 }} />
+                  <div style={{ ...spriteStyle(monitor, seat.monitor.x, seat.monitor.y), zIndex: 8 }} />
+                  <div style={{ ...spriteStyle(seat.clutter.sprite, seat.clutter.x, seat.clutter.y), zIndex: 8 }} />
+                  {extras.map((extra) => (
+                    <div key={extra.sprite} style={{ ...spriteStyle(extra.sprite, seat.anchor[0] + extra.dx, seat.anchor[1] + extra.dy), zIndex: 8 }} />
+                  ))}
+                </div>
+              )
+            })}
+            {manifest.layers.filter((layer) => layer.z >= 9).map((layer) => (
+              <div key={`${layer.sprite}-${layer.x}-${layer.y}-front`} style={{ ...spriteStyle(layer.sprite, layer.x, layer.y), zIndex: layer.z }} />
+            ))}
+            {manifest.seats.map((seat) => {
+              const agent = bySeat.get(seat.index) ?? null
+              const ax = seat.anchor[0] * SCALE
+              const ay = seat.anchor[1] * SCALE
+              const shown = agent && agent.freshness === "stale" ? "unknown" : agent?.effectiveStatus
+              const minutes = agent ? staleMinutes(agent, stamp) : null
+              return (
+                <div
+                  key={seat.id}
+                  className={agent?.agentId === selectedId ? "seat-slot is-selected" : "seat-slot"}
+                  data-seat={seat.id}
+                  data-testid={agent ? `agent-${agent.agentId}` : undefined}
+                  data-status={agent?.effectiveStatus}
+                  data-freshness={agent?.freshness}
+                  style={{ left: ax, top: ay }}
+                >
+                  {agent ? (
+                    <>
+                      <button type="button" className="task-pill" onClick={() => choose(agent.agentId)}>
+                        {agent.taskTitle || "尚未回報"}
+                      </button>
+                      <button
+                        type="button"
+                        className={`bubble bubble-${shown}${agent.freshness === "stale" ? " is-stale" : ""}`}
+                        data-bubble={shown}
+                        onClick={() => choose(agent.agentId)}
+                      >
+                        <StatusIcon status={shown ?? "unknown"} />
+                        <span className="bubble-copy">
+                          <span>{bubbleCopy(agent, stamp)}</span>
+                          {previousLine(agent) ? <span className="bubble-sub">{previousLine(agent)}</span> : null}
+                        </span>
+                        {minutes != null ? <span className="stale-tag">⏱過期 {minutes}分</span> : null}
+                      </button>
+                      <button
+                        type="button"
+                        className="desk-hit"
+                        data-agent-id={agent.agentId}
+                        aria-pressed={agent.agentId === selectedId}
+                        title={agent.name}
+                        onClick={() => choose(agent.agentId)}
+                      />
+                      <span className="select-ring" />
+                      <span className="nameplate">{plateName(agent.name)}</span>
+                    </>
+                  ) : <span className="nameplate is-empty">空位</span>}
+                </div>
+              )
+            })}
+            {selected && selectedSeat ? <DetailCard agent={selected} stamp={stamp} demo={demo} sourceLabel={sourceLabel} left={cardLeft} top={cardTop} /> : null}
+          </div>
+        </div>
+      ) : (
+        <ul className="seat-cards">
+          {manifest.seats.map((seat) => {
+            const agent = bySeat.get(seat.index)
+            if (!agent) return <li key={seat.id} className="seat-card is-empty">空位</li>
+            const shown = agent.freshness === "stale" ? "unknown" : agent.effectiveStatus
             return (
-              <div
-                key={slot.id}
-                className="seat-slot"
-                data-seat={slot.id}
-                data-testid={agent ? `agent-${agent.agentId}` : undefined}
-                data-status={agent?.effectiveStatus}
-                data-freshness={agent?.freshness}
-                style={{ left: slot.x * unit, top: slot.y * unit, width: 3 * unit, height: 2 * unit }}
-              >
-                {agent ? (
-                  <>
-                    <button
-                      type="button"
-                      className={`bubble bubble-${agent.freshness === "stale" ? "unknown" : agent.effectiveStatus}`}
-                      data-bubble={agent.freshness === "stale" ? "unknown" : agent.effectiveStatus}
-                      style={{ top: bubbleTop, maxWidth: taskW }}
-                      onClick={() => choose(agent.agentId)}
-                    >
-                      <StatusIcon status={agent.freshness === "stale" ? "unknown" : agent.effectiveStatus} />
-                      {agent.effectiveStatus === "working" && agent.freshness !== "stale" ? <span className="work-dots" aria-hidden="true"><i /><i /><i /></span> : null}
-                      <span>{bubbleCopy(agent, stamp)}{previousLine(agent) ? ` ${previousLine(agent)}` : ""}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="desk-hit"
-                      data-agent-id={agent.agentId}
-                      aria-pressed={agent.agentId === selectedId}
-                      title={agent.name}
-                      onClick={() => choose(agent.agentId)}
-                    >
-                      <PixelPerson index={index} muted={agent.effectiveStatus === "unknown" || agent.effectiveStatus === "offline" || agent.freshness === "stale"} tall={charH} />
-                      {agent.effectiveStatus === "idle" && agent.freshness === "fresh" ? <span className="seat-cup" aria-hidden="true" /> : null}
-                    </button>
-                    <button type="button" className="task-pill" style={{ top: taskTop, width: taskW }} onClick={() => choose(agent.agentId)}>
-                      {agent.taskTitle || "尚未回報"}
-                    </button>
-                    <span className="nameplate" style={{ top: 2 * unit + 4 }}>{plateName(agent.name)}</span>
-                  </>
-                ) : (
-                  <>
-                    <div className="desk-empty" aria-hidden="true" />
-                    <span className="nameplate is-empty" style={{ top: 2 * unit + 4 }}>空位</span>
-                  </>
-                )}
-              </div>
+              <li key={seat.id}>
+                <button
+                  type="button"
+                  className={`seat-card bubble-${shown}`}
+                  data-testid={`agent-${agent.agentId}`}
+                  data-status={agent.effectiveStatus}
+                  data-freshness={agent.freshness}
+                  onClick={() => choose(agent.agentId)}
+                >
+                  <b>{plateName(agent.name)}</b>
+                  <span>{bubbleCopy(agent, stamp)}{previousLine(agent) ? ` ${previousLine(agent)}` : ""}</span>
+                  <span>{agent.taskTitle || "尚未回報"}</span>
+                </button>
+              </li>
             )
           })}
-        </div>
-      </div>
-      {compact ? null : summary}
-      {compact ? <div className="compact-summary">{summary}</div> : null}
+        </ul>
+      )}
       {moreOpen ? (
         <div className="more-overlay" role="dialog" aria-label="其餘需要注意的人">
           <button type="button" className="more-btn" onClick={() => setMoreOpen(false)}>關閉</button>
           <ul>
-            {(compact ? attention : hiddenAttention).map((agent) => (
+            {(tier === "bar" || tier === "cards" ? attention : hiddenAttention).map((agent) => (
               <li key={agent.agentId}>
                 <button type="button" onClick={() => choose(agent.agentId)}>{agent.name} · {agent.taskTitle || "尚未回報"}</button>
               </li>
