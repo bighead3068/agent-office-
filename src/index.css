@@ -231,7 +231,7 @@ h1 {
   overflow: hidden;
 }
 
-.nameplate {
+.hotspot > .nameplate {
   position: absolute;
   left: 6px;
   right: 6px;
@@ -248,8 +248,8 @@ h1 {
   pointer-events: none;
 }
 
-.nameplate b, .nameplate span { white-space: nowrap; }
-.nameplate b { font-weight: 700; }
+.hotspot > .nameplate b, .hotspot > .nameplate span { white-space: nowrap; }
+.hotspot > .nameplate b { font-weight: 700; }
 
 .hotspot[aria-pressed="true"] .nameplate {
   background: #fff6cf;
@@ -491,7 +491,7 @@ details summary { cursor: pointer; }
     box-shadow: 3px 3px 0 var(--shadow);
   }
   .hotspot.supervisor { grid-column: 1 / -1; }
-  .nameplate {
+  .hotspot > .nameplate {
     position: static;
     border: 0;
     background: transparent;

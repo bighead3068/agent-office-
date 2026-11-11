@@ -356,13 +356,14 @@ export function toOfficeAgent(snapshot: AgentSnapshot, role = roleOf(snapshot.ag
   const stale = !offline && snapshot.freshness === "stale";
   const unknown = !offline && !stale && snapshot.effectiveStatus === "unknown";
   const known = snapshot.lastKnownStatus === "unknown" ? "unknown" : STATUS_SCENE[snapshot.lastKnownStatus];
-  const status: AgentStatus = offline ? "offline" : unknown ? "unknown" : stale ? known : STATUS_SCENE[snapshot.effectiveStatus as AssertedStatus] ?? "unknown";
+  const status: AgentStatus = offline ? "offline" : stale || unknown ? "unknown" : STATUS_SCENE[snapshot.effectiveStatus as AssertedStatus] ?? "unknown";
   const at = snapshot.statusProvenance?.at ?? snapshot.lastStateAt;
   return {
     id: snapshot.agentId,
     name: snapshot.label ?? nameOf(snapshot.agentId),
     role,
     status,
+    lastKnownStatus: known,
     freshness: stale ? "stale" : "fresh",
     connected: snapshot.link === "up",
     ...(at != null ? { lastUpdatedAt: new Date(at).toISOString() } : {}),

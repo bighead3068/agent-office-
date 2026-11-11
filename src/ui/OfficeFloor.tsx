@@ -5,7 +5,7 @@ import {
   STATUS_LABEL,
   attentionAgents,
   elapsedLabel,
-  shortName,
+  plateName,
   tallyDesks,
   type DeskAgent,
 } from "../office/summaryOrder"
@@ -32,15 +32,19 @@ const SEATS = [
 const SHIRTS = ["#3E8ED0", "#E5A41F", "#5AA552", "#D9483B", "#7B6FA8", "#3F7A35", "#8A5A2B", "#6E5440"]
 
 function useTier(): "x3" | "x2" | "compact" {
-  const [width, setWidth] = useState(() => (typeof window === "undefined" ? 1440 : window.innerWidth))
+  const [size, setSize] = useState(() => (
+    typeof window === "undefined"
+      ? { width: 1440, height: 900 }
+      : { width: window.innerWidth, height: window.innerHeight }
+  ))
   useEffect(() => {
-    const apply = () => setWidth(window.innerWidth)
+    const apply = () => setSize({ width: window.innerWidth, height: window.innerHeight })
     apply()
     window.addEventListener("resize", apply)
     return () => window.removeEventListener("resize", apply)
   }, [])
-  if (width >= 1280) return "x3"
-  if (width >= 1024) return "x2"
+  if (size.width >= 1400 && size.height >= 900) return "x3"
+  if (size.width >= 1024) return "x2"
   return "compact"
 }
 
@@ -89,6 +93,9 @@ function StatusIcon({ status }: { status: string }) {
       </svg>
     )
   }
+  if (status === "failed") {
+    return <span className="bubble-icon glyph" aria-hidden="true">✕</span>
+  }
   if (status === "completed") {
     return (
       <svg className="bubble-icon" viewBox="0 0 20 20" aria-hidden="true">
@@ -110,7 +117,24 @@ function StatusIcon({ status }: { status: string }) {
   return <span className="bubble-icon glyph" aria-hidden="true">!</span>
 }
 
+const PREVIOUS_WORD: Record<string, string> = {
+  completed: "完成",
+  failed: "失敗",
+  blocked: "受阻",
+  working: "工作中",
+  waiting: "等待",
+  idle: "閒置",
+  offline: "離線",
+}
+
+function previousLine(agent: DeskAgent): string | null {
+  if (agent.freshness !== "stale") return null
+  const word = agent.lastKnownStatus ? PREVIOUS_WORD[agent.lastKnownStatus] : undefined
+  return word ? `上次：${word}` : null
+}
+
 function bubbleCopy(agent: DeskAgent, now: number): string {
+  if (agent.freshness === "stale") return "未知"
   if (agent.effectiveStatus === "completed") {
     const ago = elapsedLabel(agent.terminalAt, now)
     return ago ? `完成 · ${ago}` : "完成"
@@ -139,9 +163,32 @@ function SceneArt() {
       <rect x="14.45" y="2.1" width="1.9" height="0.45" fill="#E5A41F" />
       <rect x="0.4" y="1.2" width="0.35" height="1.5" fill="#3F7A35" />
       <rect x="0.15" y="0.7" width="0.9" height="0.7" fill="#5E9E4A" />
-      <rect x="19.2" y="14.2" width="2.4" height="1.4" fill="#B8574A" />
-      <rect x="19.5" y="13.5" width="0.8" height="0.7" fill="#FFF6DD" stroke="#3B2A20" strokeWidth="0.08" />
+      <rect x="20.6" y="15.15" width="1.2" height="0.7" fill="#B8574A" />
+      <rect x="20.75" y="14.85" width="0.45" height="0.35" fill="#FFF6DD" stroke="#3B2A20" strokeWidth="0.06" />
     </svg>
+  )
+}
+
+function DetailCard({
+  agent,
+  stamp,
+  demo,
+  sourceLabel,
+}: {
+  agent: DeskAgent
+  stamp: number
+  demo: boolean
+  sourceLabel: string
+}) {
+  const previous = previousLine(agent)
+  return (
+    <article className="detail-card" data-testid="detail-card">
+      <h3>{agent.name}</h3>
+      <p className="detail-task">{agent.taskTitle || "尚未回報"}</p>
+      <p>{bubbleCopy(agent, stamp)}{previous ? ` · ${previous}` : ""}</p>
+      <p className="detail-meta">來源 {demo ? "模擬" : sourceLabel}</p>
+      <p className="detail-meta">{agent.lastReportAt == null && agent.terminalAt == null ? "尚未更新" : formatReportTime((agent.lastReportAt ?? agent.terminalAt) as number)}</p>
+    </article>
   )
 }
 
@@ -202,7 +249,9 @@ export function OfficeFloor({
         {visibleAttention.map((agent) => (
           <li key={agent.agentId}>
             <button type="button" className="attention-row" onClick={() => choose(agent.agentId)}>
-              <b title={agent.name}>{shortName(agent.name, 6)}</b>
+              <span className={`count-bar attention-bar count-${agent.effectiveStatus === "failed" ? "stuck" : agent.effectiveStatus === "waiting" ? "waiting" : "stuck"}`} />
+              <b title={agent.name}>{plateName(agent.name)}</b>
+              <span className="attention-word">{agent.effectiveStatus === "blocked" ? "受阻" : agent.effectiveStatus === "failed" ? "失敗" : "等待"}</span>
               <span className="attention-task">{agent.taskTitle || "尚未回報"}</span>
               <em>{elapsedLabel(agent.lastReportAt, stamp)}</em>
             </button>
@@ -230,22 +279,23 @@ export function OfficeFloor({
         閒置 {tally.idle} · 離線 {tally.offline} · 過期 {tally.stale} · 未入座 {tally.unseated}
       </p>
       <p className="summary-foot">資料來源：{demo ? "模擬" : "Bot自行回報（非平台原生）"} · 更新 {new Intl.DateTimeFormat("zh-TW", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "Asia/Taipei" }).format(stamp)}</p>
+      {selected ? <DetailCard agent={selected} stamp={stamp} demo={demo} sourceLabel={sourceLabel} /> : null}
       <p className="sr-only" data-testid="summary-total">共 {tally.total} 人，分格加總 {tally.cells.stuck + tally.cells.working + tally.cells.waiting + tally.cells.completed + tally.cells.unknown + tally.idle + tally.offline}</p>
     </aside>
   )
 
   return (
     <div className={demo ? "office-v2 is-demo" : "office-v2"} data-view={demo ? "demo" : "real"} data-tier={tier} data-reduced={reduced ? "true" : "false"}>
-      {compact ? counts : null}
       <div className="scene-wrap">
         <div className="scene" data-testid="office-floor" data-scale={scale} style={sceneStyle}>
           <SceneArt />
           {SEATS.map((slot, index) => {
             const agent = bySeat.get(index) ?? null
             const unit = TILE * scale
-            const charH = Math.round(2.4 * unit)
-            const bubbleTop = -(charH - 2 * unit + 6 + 36)
-            const taskTop = bubbleTop + 40
+            const headOverflow = scale === 3 ? 24 : 16
+            const charH = 2 * unit + headOverflow
+            const bubbleTop = -(36 + 4 + 24 + 6 + headOverflow)
+            const taskTop = bubbleTop + 36 + 4
             const taskW = Math.min(216, 5 * unit - 16)
             return (
               <div
@@ -261,15 +311,14 @@ export function OfficeFloor({
                   <>
                     <button
                       type="button"
-                      className={`bubble bubble-${agent.effectiveStatus}${agent.freshness === "stale" ? " is-stale" : ""}`}
-                      data-bubble={agent.effectiveStatus}
+                      className={`bubble bubble-${agent.freshness === "stale" ? "unknown" : agent.effectiveStatus}`}
+                      data-bubble={agent.freshness === "stale" ? "unknown" : agent.effectiveStatus}
                       style={{ top: bubbleTop, maxWidth: taskW }}
                       onClick={() => choose(agent.agentId)}
                     >
-                      <StatusIcon status={agent.effectiveStatus === "failed" ? "blocked" : agent.effectiveStatus} />
-                      {agent.effectiveStatus === "working" ? <span className="work-dots" aria-hidden="true"><i /><i /><i /></span> : null}
-                      <span>{bubbleCopy(agent, stamp)}</span>
-                      {agent.freshness === "stale" ? <small className="stale-tag">⏱過期 {elapsedLabel(agent.lastReportAt, stamp)}</small> : null}
+                      <StatusIcon status={agent.freshness === "stale" ? "unknown" : agent.effectiveStatus} />
+                      {agent.effectiveStatus === "working" && agent.freshness !== "stale" ? <span className="work-dots" aria-hidden="true"><i /><i /><i /></span> : null}
+                      <span>{bubbleCopy(agent, stamp)}{previousLine(agent) ? ` ${previousLine(agent)}` : ""}</span>
                     </button>
                     <button
                       type="button"
@@ -285,7 +334,7 @@ export function OfficeFloor({
                     <button type="button" className="task-pill" style={{ top: taskTop, width: taskW }} onClick={() => choose(agent.agentId)}>
                       {agent.taskTitle || "尚未回報"}
                     </button>
-                    <span className="nameplate" style={{ top: 2 * unit + 4 }}>{shortName(agent.name, 6)}</span>
+                    <span className="nameplate" style={{ top: 2 * unit + 4 }}>{plateName(agent.name)}</span>
                   </>
                 ) : (
                   <>
@@ -296,15 +345,6 @@ export function OfficeFloor({
               </div>
             )
           })}
-          {selected ? (
-            <article className="detail-card" data-testid="detail-card">
-              <h3>{selected.name}</h3>
-              <p className="detail-task">{selected.taskTitle || "尚未回報"}</p>
-              <p>{bubbleCopy(selected, stamp)}{selected.freshness === "stale" ? " · 過期" : ""}{selected.lastKnownStatus && selected.effectiveStatus === "unknown" ? ` · 上次已知 ${STATUS_LABEL[selected.lastKnownStatus] ?? selected.lastKnownStatus}` : ""}</p>
-              <p className="detail-meta">來源 {demo ? "模擬" : sourceLabel}</p>
-              <p className="detail-meta">{selected.lastReportAt == null && selected.terminalAt == null ? "尚未更新" : formatReportTime((selected.lastReportAt ?? selected.terminalAt) as number)}</p>
-            </article>
-          ) : null}
         </div>
       </div>
       {compact ? null : summary}

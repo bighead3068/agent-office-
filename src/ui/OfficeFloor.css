@@ -38,9 +38,9 @@
 
 .topbar h1 {
   margin: 0;
-  font-family: "Fusion Pixel", Silkscreen, sans-serif;
+  font-family: "Noto Sans TC", "Noto Sans CJK TC", "WenQuanYi Micro Hei", sans-serif;
   font-size: 22px;
-  font-weight: 400;
+  font-weight: 700;
   line-height: 48px;
   white-space: nowrap;
 }
@@ -50,15 +50,17 @@
   margin: 0;
   padding: 4px 12px;
   border: 2px solid #3B2A20;
-  font-family: "Fusion Pixel", sans-serif;
+  font-family: "Noto Sans TC", "Noto Sans CJK TC", "WenQuanYi Micro Hei", sans-serif;
   font-size: 14px;
+  font-weight: 700;
   line-height: 1;
 }
 
-.mode-real { background: #5AA552; color: #FFF6DD; }
+.mode-real { background: #5AA552; color: #3B2A20; }
 .mode-demo {
   color: #3B2A20;
-  background: repeating-linear-gradient(-45deg, #FFE9A8, #FFE9A8 6px, #E5A41F 6px, #E5A41F 12px);
+  background: #FFE9A8;
+  box-shadow: inset 0 -4px #E5A41F;
 }
 
 .topbar .live-callout {
@@ -119,7 +121,7 @@
 
 .desk-empty { opacity: 0.45; }
 .desk-hit { padding: 0; cursor: pointer; }
-.desk-hit[aria-pressed="true"] { outline: 2px solid #D9483B; outline-offset: 2px; }
+.desk-hit[aria-pressed="true"] { outline: 2px solid #C8962E; outline-offset: 2px; }
 
 .pixel-person {
   position: absolute;
@@ -132,12 +134,13 @@
 
 .seat-cup {
   position: absolute;
-  right: 4px;
-  bottom: 4px;
-  width: 8px;
-  height: 8px;
+  right: 2px;
+  bottom: 6px;
+  width: 16px;
+  height: 14px;
   background: #FFF6DD;
   border: 2px solid #3B2A20;
+  box-shadow: inset 0 -4px #C8962E;
 }
 
 .bubble {
@@ -153,7 +156,7 @@
   border: 2px solid #3B2A20;
   border-radius: 6px;
   color: #FFF6DD;
-  font-family: "Fusion Pixel", sans-serif;
+  font-family: "Noto Sans TC", "Noto Sans CJK TC", "WenQuanYi Micro Hei", sans-serif;
   font-size: 16px;
   font-weight: 700;
   line-height: 1;
@@ -175,11 +178,16 @@
 }
 .bubble-icon { width: 20px; height: 20px; flex: none; }
 .bubble-icon.glyph { display: grid; place-items: center; font-size: 16px; }
-.bubble-blocked, .bubble-failed { background: #D9483B; border-width: 3px; z-index: 4; }
-.bubble-working { background: #3E8ED0; }
+.bubble-blocked { background: #C73E32; border-width: 3px; z-index: 4; }
+.bubble-failed {
+  background: #C73E32;
+  z-index: 4;
+  box-shadow: 0 0 0 2px #FFF6DD, 0 0 0 4px #3B2A20;
+}
+.bubble-working { background: #246BA5; }
 .bubble-waiting { background: #E5A41F; color: #3B2A20; }
-.bubble-completed { background: #5AA552; }
-.bubble-unknown { background: #7B6FA8; border-style: dashed; }
+.bubble-completed { background: #5AA552; color: #3B2A20; }
+.bubble-unknown { background: #5E538C; border-style: dashed; }
 .bubble-offline { background: #6B6B6B; border-style: dotted; }
 .bubble-idle {
   height: 28px;
@@ -245,8 +253,9 @@
   border: 2px solid #8A5A2B;
   background: #FFF6DD;
   color: #3B2A20;
-  font-family: "Fusion Pixel", sans-serif;
+  font-family: "Noto Sans TC", "Noto Sans CJK TC", "WenQuanYi Micro Hei", sans-serif;
   font-size: 13px;
+  font-weight: 700;
   line-height: 14px;
   white-space: nowrap;
   transform: translateX(-50%);
@@ -254,14 +263,12 @@
 .nameplate.is-empty { opacity: 0.55; }
 
 .detail-card {
-  position: absolute;
-  z-index: 5;
-  right: 8px;
-  bottom: 8px;
-  width: 280px;
+  position: static;
+  width: auto;
+  margin: 8px;
   overflow: hidden;
   padding: 10px 12px;
-  background: #FFF6DD;
+  background: #F6E7C1;
   border: 2px solid #8A5A2B;
   color: #3B2A20;
 }
@@ -290,9 +297,9 @@
   margin: 0;
   padding: 0 10px;
   overflow: visible;
-  font-family: "Fusion Pixel", sans-serif;
+  font-family: "Noto Sans TC", "Noto Sans CJK TC", "WenQuanYi Micro Hei", sans-serif;
   font-size: 18px;
-  font-weight: 400;
+  font-weight: 700;
   white-space: nowrap;
 }
 .count-row {
@@ -313,7 +320,7 @@
 .count-cell strong {
   font-family: "Fusion Pixel", sans-serif;
   font-size: 24px;
-  font-weight: 700;
+  font-weight: 400;
   line-height: 1;
 }
 .count-cell span:last-child { font-size: 14px; }
@@ -341,7 +348,7 @@
 }
 .attention-row {
   display: grid;
-  grid-template-columns: 4.5em minmax(0, 1fr) auto;
+  grid-template-columns: 4px 4.5em 3em minmax(0, 1fr) auto;
   align-items: center;
   width: 100%;
   height: 44px;
@@ -353,6 +360,8 @@
   font-size: 14px;
   text-align: left;
 }
+.attention-bar { height: 28px; }
+.attention-word { font-size: 13px; font-weight: 700; }
 .attention-row b { font-size: 14px; }
 .attention-task {
   overflow: hidden;
@@ -378,14 +387,15 @@
   white-space: nowrap;
 }
 .summary-foot {
-  height: 20px;
+  min-height: 20px;
   margin: 0;
-  padding: 0 10px;
-  overflow: hidden;
+  padding: 4px 10px 8px;
+  overflow: visible;
   color: #6E5440;
+  font-family: "Fusion Pixel", sans-serif;
   font-size: 12px;
-  line-height: 20px;
-  white-space: nowrap;
+  font-weight: 400;
+  line-height: 16px;
 }
 
 .more-overlay {

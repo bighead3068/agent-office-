@@ -128,7 +128,7 @@ function toDesk(agent: ReturnType<typeof sceneAgents>[number], index: number): D
     name: agent.name,
     seat: index,
     effectiveStatus: status,
-    lastKnownStatus: agent.status,
+    lastKnownStatus: agent.lastKnownStatus ?? agent.status,
     freshness: agent.freshness,
     taskTitle: agent.task?.title ?? "",
     terminalAt: agent.status === "completed" || agent.status === "failed" ? at : null,

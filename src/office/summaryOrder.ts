@@ -7,7 +7,8 @@
  * Those seven buckets are a partition: they add up to the bot total.
  * 過期 and 未入座 are markers on bots already counted, so they are not added again.
  *
- * 需要注意 is only blocked -> waiting: 受阻, 失敗, 進行中, 等待.
+ * 需要注意 is only 受阻, 失敗, then 等待. 進行中 stays in the count cell
+ * so a waiting bot is not pushed into "+N".
  * Inside one status, the lower seat wins, then the agent id.
  */
 export const SUMMARY_ORDER = [
@@ -29,7 +30,7 @@ export const COUNT_CELLS = [
   { id: "unknown", label: "未知", statuses: ["unknown"] },
 ] as const
 
-export const ATTENTION_ORDER = ["blocked", "failed", "working", "waiting"] as const
+export const ATTENTION_ORDER = ["blocked", "failed", "waiting"] as const
 
 export type SummaryStatus = (typeof SUMMARY_ORDER)[number]
 
@@ -142,4 +143,10 @@ export function shortName(name: string, max = 8): string {
   const chars = Array.from(name)
   if (chars.length <= max) return name
   return `${chars.slice(0, max - 1).join("")}…`
+}
+
+/** Name plate: drop a shared "Agent Office" / "Agent" prefix before shortening. */
+export function plateName(name: string): string {
+  const stripped = name.replace(/^agent office\s+/i, "").replace(/^agent[-_\s]+/i, "").trim()
+  return shortName(stripped.length > 0 ? stripped : name, 8)
 }

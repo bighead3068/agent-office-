@@ -36,6 +36,8 @@ export interface OfficeAgent {
   name: string
   role: string
   status: AgentStatus
+  /** Last reported status when `status` is the effective unknown/offline view. */
+  lastKnownStatus?: AgentStatus
   task?: OfficeTask
   /**
    * `stale` overlays whatever `status` is: keep the last known cues, freeze
