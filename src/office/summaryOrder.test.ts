@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { countDesks, shortName, sortDesks, type DeskAgent } from "./summaryOrder"
+import { attentionAgents, shortName, sortDesks, tallyDesks, type DeskAgent } from "./summaryOrder"
 
 function desk(partial: Partial<DeskAgent> & Pick<DeskAgent, "agentId" | "effectiveStatus" | "seat">): DeskAgent {
   return {
@@ -41,15 +41,23 @@ describe("supervisor sort", () => {
       desk({ agentId: "b", effectiveStatus: "working", seat: 2 }),
       desk({ agentId: "a", effectiveStatus: "working", seat: 0 }),
       desk({ agentId: "c", effectiveStatus: "unknown", seat: 1 }),
+      desk({ agentId: "d", effectiveStatus: "failed", seat: 3 }),
+      desk({ agentId: "e", effectiveStatus: "idle", seat: 8, freshness: "stale" }),
+      desk({ agentId: "f", effectiveStatus: "offline", seat: 9 }),
     ]
-    expect(sortDesks(agents).map((agent) => agent.agentId)).toEqual(["a", "b", "c"])
-    const counts = countDesks(agents)
-    const total = Object.values(counts).reduce((sum, value) => sum + value, 0)
-    expect(total).toBe(agents.length)
-    expect(counts.working).toBe(2)
-    expect(counts.unknown).toBe(1)
-    expect(counts.idle).toBe(0)
-    expect(counts.failed).toBe(0)
+    expect(sortDesks(agents).map((agent) => agent.agentId)).toEqual(["d", "a", "b", "c", "f", "e"])
+    expect(attentionAgents(agents).map((agent) => agent.agentId)).toEqual(["d", "a", "b"])
+    const tally = tallyDesks(agents)
+    const shown = tally.cells.stuck + tally.cells.working + tally.cells.waiting + tally.cells.completed + tally.cells.unknown + tally.idle + tally.offline
+    expect(shown).toBe(agents.length)
+    expect(tally.total).toBe(agents.length)
+    expect(tally.cells.stuck).toBe(1)
+    expect(tally.cells.working).toBe(2)
+    expect(tally.cells.unknown).toBe(1)
+    expect(tally.idle).toBe(1)
+    expect(tally.offline).toBe(1)
+    expect(tally.stale).toBe(1)
+    expect(tally.unseated).toBe(2)
   })
 
   it("shortens name plates without dropping the full name contract", () => {

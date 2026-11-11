@@ -1,52 +1,148 @@
-import { STATUS_LABEL, countDesks, shortName, sortDesks, type DeskAgent } from "../office/summaryOrder"
+import { useEffect, useState } from "react"
+import {
+  ATTENTION_ORDER,
+  COUNT_CELLS,
+  STATUS_LABEL,
+  attentionAgents,
+  elapsedLabel,
+  shortName,
+  tallyDesks,
+  type DeskAgent,
+} from "../office/summaryOrder"
 import { formatReportTime } from "./reportConnection"
 import "./OfficeFloor.css"
 
-const SHIRTS = ["#3f8f6b", "#d07a3a", "#7d6bb5", "#c45c5c", "#3d7ea6"]
-const HAIR = ["#3b291c", "#8a4b2f", "#1d1a24", "#c9842a", "#4a3428"]
+const TILE = 16
+const COLUMNS = 22
+const ROWS = 16
+const SEAT_CAP = 8
+const ATTENTION_CAP = 4
 
-function PixelPerson({ index, dim }: { index: number; dim: boolean }) {
-  const shirt = SHIRTS[index % SHIRTS.length] ?? "#3f8f6b"
-  const hair = HAIR[index % HAIR.length] ?? "#3b291c"
+const SEATS = [
+  { id: "A1", x: 2, y: 5 },
+  { id: "A2", x: 7, y: 5 },
+  { id: "A3", x: 12, y: 5 },
+  { id: "A4", x: 17, y: 5 },
+  { id: "B1", x: 2, y: 12 },
+  { id: "B2", x: 7, y: 12 },
+  { id: "B3", x: 12, y: 12 },
+  { id: "B4", x: 17, y: 12 },
+] as const
+
+const SHIRTS = ["#3E8ED0", "#E5A41F", "#5AA552", "#D9483B", "#7B6FA8", "#3F7A35", "#8A5A2B", "#6E5440"]
+
+function useTier(): "x3" | "x2" | "compact" {
+  const [width, setWidth] = useState(() => (typeof window === "undefined" ? 1440 : window.innerWidth))
+  useEffect(() => {
+    const apply = () => setWidth(window.innerWidth)
+    apply()
+    window.addEventListener("resize", apply)
+    return () => window.removeEventListener("resize", apply)
+  }, [])
+  if (width >= 1280) return "x3"
+  if (width >= 1024) return "x2"
+  return "compact"
+}
+
+function useReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(false)
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)")
+    const apply = () => setReduced(media.matches)
+    apply()
+    media.addEventListener("change", apply)
+    return () => media.removeEventListener("change", apply)
+  }, [])
+  return reduced
+}
+
+function PixelPerson({ index, muted, tall }: { index: number; muted: boolean; tall: number }) {
+  const shirt = SHIRTS[index % SHIRTS.length] ?? "#3E8ED0"
   return (
-    <svg className="pixel-person" width="72" height="84" viewBox="0 0 16 20" shapeRendering="crispEdges" aria-hidden="true" opacity={dim ? 0.55 : 1}>
-      <rect x="4" y="1" width="8" height="3" fill={hair} />
-      <rect x="5" y="3" width="6" height="5" fill="#f0c29a" />
-      <rect x="6" y="5" width="1" height="1" fill="#2b211c" />
-      <rect x="9" y="5" width="1" height="1" fill="#2b211c" />
+    <svg className={muted ? "pixel-person is-muted" : "pixel-person"} viewBox="0 0 16 20" style={{ height: tall, width: Math.round(tall * 0.8) }} shapeRendering="crispEdges" aria-hidden="true">
+      <rect x="4" y="1" width="8" height="3" fill="#3B2A20" />
+      <rect x="5" y="3" width="6" height="5" fill="#F0C29A" />
+      <rect x="6" y="5" width="1" height="1" fill="#3B2A20" />
+      <rect x="9" y="5" width="1" height="1" fill="#3B2A20" />
       <rect x="3" y="8" width="10" height="6" fill={shirt} />
-      <rect x="2" y="8" width="2" height="4" fill="#e0aa78" />
-      <rect x="12" y="8" width="2" height="4" fill="#e0aa78" />
-      <rect x="5" y="14" width="2" height="4" fill="#5c4636" />
-      <rect x="9" y="14" width="2" height="4" fill="#5c4636" />
-      <rect x="4" y="18" width="3" height="1" fill="#3b291c" />
-      <rect x="9" y="18" width="3" height="1" fill="#3b291c" />
+      <rect x="2" y="8" width="2" height="4" fill="#E0AA78" />
+      <rect x="12" y="8" width="2" height="4" fill="#E0AA78" />
+      <rect x="5" y="14" width="2" height="4" fill="#5C4636" />
+      <rect x="9" y="14" width="2" height="4" fill="#5C4636" />
     </svg>
   )
 }
 
-function Plant() {
+function StatusIcon({ status }: { status: string }) {
+  if (status === "working") {
+    return (
+      <svg className="bubble-icon gear" viewBox="0 0 20 20" aria-hidden="true">
+        <circle cx="10" cy="10" r="3" fill="currentColor" />
+        <path fill="currentColor" d="M9 1h2v3h-2zm0 15h2v3h-2zM1 9h3v2H1zm15 0h3v2h-3zM3.5 3.5l2 2-1.4 1.4-2-2zm12.4 12.4 2 2-1.4 1.4-2-2zM3.5 16.5l1.4-1.4 2 2-1.4 1.4zM15.1 4.9l1.4-1.4 2 2-1.4 1.4z" />
+      </svg>
+    )
+  }
+  if (status === "waiting") {
+    return (
+      <svg className="bubble-icon" viewBox="0 0 20 20" aria-hidden="true">
+        <path fill="currentColor" d="M5 2h10v2H5zm1 3h8l-4 4 4 4H6l4-4zm-1 10h10v2H5z" />
+      </svg>
+    )
+  }
+  if (status === "completed") {
+    return (
+      <svg className="bubble-icon" viewBox="0 0 20 20" aria-hidden="true">
+        <path fill="currentColor" d="M4 10.5 8 14.5 16 5.5l1.5 1.4L8 17.5 2.5 12z" />
+      </svg>
+    )
+  }
+  if (status === "unknown") {
+    return <span className="bubble-icon glyph" aria-hidden="true">?</span>
+  }
+  if (status === "offline") {
+    return (
+      <svg className="bubble-icon" viewBox="0 0 20 20" aria-hidden="true">
+        <path fill="currentColor" d="M7 2h6v4h4v2H11v2h5v2H4v-2h5V8H3V6h4z" />
+      </svg>
+    )
+  }
+  if (status === "idle") return <span className="bubble-icon glyph" aria-hidden="true">—</span>
+  return <span className="bubble-icon glyph" aria-hidden="true">!</span>
+}
+
+function bubbleCopy(agent: DeskAgent, now: number): string {
+  if (agent.effectiveStatus === "completed") {
+    const ago = elapsedLabel(agent.terminalAt, now)
+    return ago ? `完成 · ${ago}` : "完成"
+  }
+  if (agent.effectiveStatus === "idle") return "閒置"
+  if (agent.effectiveStatus === "failed") return "失敗"
+  if (agent.effectiveStatus === "blocked") return "受阻"
+  if (agent.effectiveStatus === "offline") return "離線"
+  return STATUS_LABEL[agent.effectiveStatus] ?? "未知"
+}
+
+function SceneArt() {
   return (
-    <svg viewBox="0 0 14 18" width="28" height="36" shapeRendering="crispEdges" aria-hidden="true">
-      <rect x="6" y="8" width="2" height="8" fill="#6b8f4e" />
-      <rect x="2" y="4" width="4" height="4" fill="#7eaa55" />
-      <rect x="8" y="3" width="4" height="4" fill="#648a42" />
-      <rect x="5" y="1" width="4" height="3" fill="#8fbf63" />
-      <rect x="4" y="16" width="6" height="2" fill="#a96b3c" />
+    <svg className="scene-art" viewBox="0 0 22 16" shapeRendering="crispEdges" aria-hidden="true">
+      <rect width="22" height="4.2" fill="#E8D5A8" />
+      <rect y="4.2" width="22" height="0.35" fill="#8A5A2B" />
+      <rect y="4.55" width="22" height="11.45" fill="#C8945A" />
+      <rect x="0" y="6" width="22" height="0.08" fill="#A86E3C" />
+      <rect x="0" y="9" width="22" height="0.08" fill="#A86E3C" />
+      <rect x="0" y="12" width="22" height="0.08" fill="#A86E3C" />
+      <rect x="1" y="0.6" width="3" height="2.2" fill="#FFE9A8" stroke="#8A5A2B" strokeWidth="0.12" />
+      <rect x="8" y="0.6" width="3" height="2.2" fill="#FFE9A8" stroke="#8A5A2B" strokeWidth="0.12" />
+      <rect x="14.2" y="0.5" width="2.4" height="3.2" fill="#8A5A2B" />
+      <rect x="14.45" y="0.8" width="1.9" height="0.45" fill="#5AA552" />
+      <rect x="14.45" y="1.45" width="1.9" height="0.45" fill="#3E8ED0" />
+      <rect x="14.45" y="2.1" width="1.9" height="0.45" fill="#E5A41F" />
+      <rect x="0.4" y="1.2" width="0.35" height="1.5" fill="#3F7A35" />
+      <rect x="0.15" y="0.7" width="0.9" height="0.7" fill="#5E9E4A" />
+      <rect x="19.2" y="14.2" width="2.4" height="1.4" fill="#B8574A" />
+      <rect x="19.5" y="13.5" width="0.8" height="0.7" fill="#FFF6DD" stroke="#3B2A20" strokeWidth="0.08" />
     </svg>
   )
-}
-
-function bubbleText(agent: DeskAgent): string {
-  const label = STATUS_LABEL[agent.effectiveStatus] ?? "未知"
-  if (agent.freshness === "stale") return `${label}・過期`
-  return label
-}
-
-function completedTime(agent: DeskAgent): string | null {
-  if (agent.effectiveStatus !== "completed" && agent.lastKnownStatus !== "completed") return null
-  if (agent.terminalAt == null || !Number.isFinite(agent.terminalAt)) return null
-  return formatReportTime(agent.terminalAt)
 }
 
 export function OfficeFloor({
@@ -54,95 +150,178 @@ export function OfficeFloor({
   selectedId,
   onSelect,
   demo = false,
+  now,
+  sourceLabel = "Bot自行回報",
 }: {
   agents: readonly DeskAgent[]
   selectedId?: string
   onSelect?: (id: string) => void
   demo?: boolean
+  now?: number | null
+  sourceLabel?: string
 }) {
-  const counts = countDesks(agents)
-  const glance = [
-    ["working", "工作中"],
-    ["blocked", "受阻"],
-    ["failed", "失敗"],
-    ["completed", "已完成"],
-    ["unknown", "未知"],
-  ] as const
-  const ordered = [...agents].sort((left, right) => left.seat - right.seat || left.agentId.localeCompare(right.agentId))
-  const summary = sortDesks(agents)
+  const tier = useTier()
+  const reduced = useReducedMotion()
+  const scale = tier === "x3" ? 3 : 2
+  const panelWidth = tier === "x2" ? 288 : 320
+  const compact = tier === "compact"
+  const [moreOpen, setMoreOpen] = useState(false)
+  const stamp = now ?? Date.now()
+  const tally = tallyDesks(agents)
+  const attention = attentionAgents(agents)
+  const visibleAttention = attention.slice(0, ATTENTION_CAP)
+  const hiddenAttention = attention.slice(ATTENTION_CAP)
+  const bySeat = new Map(agents.filter((agent) => agent.seat >= 0 && agent.seat < SEAT_CAP).map((agent) => [agent.seat, agent]))
+  const selected = agents.find((agent) => agent.agentId === selectedId) ?? null
+  const sceneStyle = { width: COLUMNS * TILE * scale, height: ROWS * TILE * scale }
+
+  function choose(id: string) {
+    onSelect?.(id)
+    setMoreOpen(false)
+  }
+
+  const counts = (
+    <ul className="count-row" aria-label="狀態人數">
+      {COUNT_CELLS.map((cell) => {
+        const value = tally.cells[cell.id]
+        return (
+          <li key={cell.id} className={value === 0 ? "count-cell is-zero" : "count-cell"} data-count={cell.id}>
+            <span className={`count-bar count-${cell.id}`} />
+            <strong>{value}</strong>
+            <span>{cell.label}</span>
+          </li>
+        )
+      })}
+    </ul>
+  )
+
+  const attentionBlock = (
+    <div className="attention">
+      <h3>需要注意</h3>
+      <ol className="attention-list">
+        {visibleAttention.map((agent) => (
+          <li key={agent.agentId}>
+            <button type="button" className="attention-row" onClick={() => choose(agent.agentId)}>
+              <b title={agent.name}>{shortName(agent.name, 6)}</b>
+              <span className="attention-task">{agent.taskTitle || "尚未回報"}</span>
+              <em>{elapsedLabel(agent.lastReportAt, stamp)}</em>
+            </button>
+          </li>
+        ))}
+      </ol>
+      {hiddenAttention.length > 0 ? (
+        <button type="button" className="more-btn" data-testid="attention-more" onClick={() => setMoreOpen(true)}>
+          +{hiddenAttention.length} 個
+        </button>
+      ) : null}
+    </div>
+  )
+
+  const summary = (
+    <aside className="summary-dock" data-testid="summary-panel" aria-label="主管摘要" style={compact ? undefined : { width: panelWidth }}>
+      <h2>主管摘要（唯讀）</h2>
+      {counts}
+      {compact ? (
+        <button type="button" className="more-btn" onClick={() => setMoreOpen(true)}>
+          需要注意 {attention.length}
+        </button>
+      ) : attentionBlock}
+      <p className="summary-secondary" data-testid="summary-secondary">
+        閒置 {tally.idle} · 離線 {tally.offline} · 過期 {tally.stale} · 未入座 {tally.unseated}
+      </p>
+      <p className="summary-foot">資料來源：{demo ? "模擬" : "Bot自行回報（非平台原生）"} · 更新 {new Intl.DateTimeFormat("zh-TW", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "Asia/Taipei" }).format(stamp)}</p>
+      <p className="sr-only" data-testid="summary-total">共 {tally.total} 人，分格加總 {tally.cells.stuck + tally.cells.working + tally.cells.waiting + tally.cells.completed + tally.cells.unknown + tally.idle + tally.offline}</p>
+    </aside>
+  )
 
   return (
-    <div className={demo ? "office-v2 demo-office" : "office-v2"} data-view={demo ? "demo" : "real"}>
-      <div className="floor-column">
-        {demo ? <p className="demo-badge" data-testid="demo-badge">DEMO</p> : null}
-        <ul className="glance" aria-label="狀態一眼">
-          {glance.map(([status, label]) => (
-            <li key={status} data-glance={status}>
-              <span>{label}</span>
-              <strong>{counts[status] ?? 0}</strong>
-            </li>
-          ))}
-        </ul>
-        <div className="floor-wood" data-testid="office-floor">
-          <span className="plant plant-left"><Plant /></span>
-          <span className="plant plant-right"><Plant /></span>
-          {ordered.length === 0 ? (
-            <div className="empty-floor">
-              <strong>還沒有登記 bot</strong>
-              <p>空著的辦公室不是閒置，也還沒有未知以外的狀態。</p>
-            </div>
-          ) : (
-            <div className="desk-grid">
-              {ordered.map((agent) => {
-                const time = completedTime(agent)
-                const title = agent.taskTitle || (agent.effectiveStatus === "unknown" ? "尚未回報" : "沒有任務標題")
-                return (
-                  <button
-                    key={agent.agentId}
-                    type="button"
-                    className="desk"
-                    data-testid={`agent-${agent.agentId}`}
-                    data-agent-id={agent.agentId}
-                    data-seat={`S${agent.seat + 1}`}
-                    data-status={agent.effectiveStatus}
-                    data-freshness={agent.freshness}
-                    aria-pressed={agent.agentId === selectedId}
-                    title={agent.name}
-                    onClick={() => onSelect?.(agent.agentId)}
-                  >
-                    <span className={`bubble bubble-${agent.effectiveStatus}${agent.freshness === "stale" ? " bubble-stale" : ""}`} data-bubble={agent.effectiveStatus}>
-                      {bubbleText(agent)}
-                      {time ? <small>{time}</small> : null}
-                    </span>
-                    <PixelPerson index={agent.seat} dim={agent.effectiveStatus === "unknown" || agent.freshness === "stale"} />
-                    {agent.effectiveStatus === "idle" && agent.freshness === "fresh" ? <span className="egg">咖啡</span> : null}
-                    <p className="task-line">{title}</p>
-                    <span className="nameplate">{shortName(agent.name)}</span>
-                  </button>
-                )
-              })}
-            </div>
-          )}
+    <div className={demo ? "office-v2 is-demo" : "office-v2"} data-view={demo ? "demo" : "real"} data-tier={tier} data-reduced={reduced ? "true" : "false"}>
+      {compact ? counts : null}
+      <div className="scene-wrap">
+        <div className="scene" data-testid="office-floor" data-scale={scale} style={sceneStyle}>
+          <SceneArt />
+          {SEATS.map((slot, index) => {
+            const agent = bySeat.get(index) ?? null
+            const unit = TILE * scale
+            const charH = Math.round(2.4 * unit)
+            const bubbleTop = -(charH - 2 * unit + 6 + 36)
+            const taskTop = bubbleTop + 40
+            const taskW = Math.min(216, 5 * unit - 16)
+            return (
+              <div
+                key={slot.id}
+                className="seat-slot"
+                data-seat={slot.id}
+                data-testid={agent ? `agent-${agent.agentId}` : undefined}
+                data-status={agent?.effectiveStatus}
+                data-freshness={agent?.freshness}
+                style={{ left: slot.x * unit, top: slot.y * unit, width: 3 * unit, height: 2 * unit }}
+              >
+                {agent ? (
+                  <>
+                    <button
+                      type="button"
+                      className={`bubble bubble-${agent.effectiveStatus}${agent.freshness === "stale" ? " is-stale" : ""}`}
+                      data-bubble={agent.effectiveStatus}
+                      style={{ top: bubbleTop, maxWidth: taskW }}
+                      onClick={() => choose(agent.agentId)}
+                    >
+                      <StatusIcon status={agent.effectiveStatus === "failed" ? "blocked" : agent.effectiveStatus} />
+                      {agent.effectiveStatus === "working" ? <span className="work-dots" aria-hidden="true"><i /><i /><i /></span> : null}
+                      <span>{bubbleCopy(agent, stamp)}</span>
+                      {agent.freshness === "stale" ? <small className="stale-tag">⏱過期 {elapsedLabel(agent.lastReportAt, stamp)}</small> : null}
+                    </button>
+                    <button
+                      type="button"
+                      className="desk-hit"
+                      data-agent-id={agent.agentId}
+                      aria-pressed={agent.agentId === selectedId}
+                      title={agent.name}
+                      onClick={() => choose(agent.agentId)}
+                    >
+                      <PixelPerson index={index} muted={agent.effectiveStatus === "unknown" || agent.effectiveStatus === "offline" || agent.freshness === "stale"} tall={charH} />
+                      {agent.effectiveStatus === "idle" && agent.freshness === "fresh" ? <span className="seat-cup" aria-hidden="true" /> : null}
+                    </button>
+                    <button type="button" className="task-pill" style={{ top: taskTop, width: taskW }} onClick={() => choose(agent.agentId)}>
+                      {agent.taskTitle || "尚未回報"}
+                    </button>
+                    <span className="nameplate" style={{ top: 2 * unit + 4 }}>{shortName(agent.name, 6)}</span>
+                  </>
+                ) : (
+                  <>
+                    <div className="desk-empty" aria-hidden="true" />
+                    <span className="nameplate is-empty" style={{ top: 2 * unit + 4 }}>空位</span>
+                  </>
+                )}
+              </div>
+            )
+          })}
+          {selected ? (
+            <article className="detail-card" data-testid="detail-card">
+              <h3>{selected.name}</h3>
+              <p className="detail-task">{selected.taskTitle || "尚未回報"}</p>
+              <p>{bubbleCopy(selected, stamp)}{selected.freshness === "stale" ? " · 過期" : ""}{selected.lastKnownStatus && selected.effectiveStatus === "unknown" ? ` · 上次已知 ${STATUS_LABEL[selected.lastKnownStatus] ?? selected.lastKnownStatus}` : ""}</p>
+              <p className="detail-meta">來源 {demo ? "模擬" : sourceLabel}</p>
+              <p className="detail-meta">{selected.lastReportAt == null && selected.terminalAt == null ? "尚未更新" : formatReportTime((selected.lastReportAt ?? selected.terminalAt) as number)}</p>
+            </article>
+          ) : null}
         </div>
       </div>
-      <aside className="summary-dock" data-testid="summary-panel" aria-label="監督總覽">
-        <h2>監督總覽</h2>
-        <p className="hint">受阻、失敗、工作中、等待中、已完成、未知。一共 {agents.length} 人。</p>
-        <ol className="summary-list">
-          {summary.map((agent) => (
-            <li key={agent.agentId}>
-              <button type="button" className="summary-row" onClick={() => onSelect?.(agent.agentId)}>
-                <span className={`dot dot-${agent.effectiveStatus}`} />
-                <b title={agent.name}>{shortName(agent.name)}</b>
-                <span>
-                  <em>{STATUS_LABEL[agent.effectiveStatus] ?? "未知"}{agent.freshness === "stale" ? "・過期" : ""}</em>
-                  <span className="summary-task">{agent.taskTitle || "尚未回報"}{completedTime(agent) ? ` ${completedTime(agent)}` : ""}</span>
-                </span>
-              </button>
-            </li>
-          ))}
-        </ol>
-      </aside>
+      {compact ? null : summary}
+      {compact ? <div className="compact-summary">{summary}</div> : null}
+      {moreOpen ? (
+        <div className="more-overlay" role="dialog" aria-label="其餘需要注意的人">
+          <button type="button" className="more-btn" onClick={() => setMoreOpen(false)}>關閉</button>
+          <ul>
+            {(compact ? attention : hiddenAttention).map((agent) => (
+              <li key={agent.agentId}>
+                <button type="button" onClick={() => choose(agent.agentId)}>{agent.name} · {agent.taskTitle || "尚未回報"}</button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      <p className="sr-only">{ATTENTION_ORDER.join(" ")}</p>
     </div>
   )
 }

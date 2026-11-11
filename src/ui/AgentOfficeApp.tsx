@@ -33,22 +33,23 @@ export function AgentOfficeApp() {
 
 function RealOffice() {
   const snapshot = useSnapshot(true, "/api/state", projectOfficeState)
-  const [selectedId, setSelectedId] = useState("")
+  const [selectedId, setSelectedId] = useState(() => (typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("seat") ?? ""))
   const agents = snapshot.data?.agents ?? []
   return (
-    <div className="page" data-view="real" data-partition="real">
-      <header className="top">
-        <div>
-          <p className="kicker">Agent Office</p>
-          <h1>代理人辦公室</h1>
-        </div>
-        <p className="banner banner-real" role="status" data-testid="mode-banner">本機回報・真實座位</p>
+    <div className="office-page" data-view="real" data-partition="real">
+      <header className="topbar">
+        <h1>代理人辦公室</h1>
+        <p className="mode-badge mode-real" role="status" data-testid="mode-banner">真實</p>
+        <ConnectionNotice snapshot={snapshot} emptyText="沒有回報不是閒置。" />
       </header>
-      <ConnectionNotice snapshot={snapshot} emptyText="沒有回報不是閒置。" />
-      <OfficeFloor agents={agents} selectedId={selectedId} onSelect={setSelectedId} />
-      <footer className="foot">
-        <p>工作中、受阻、失敗、已完成、未知可以在進門時直接看懂。未知不是閒置。完成不會自己變成閒置。超過 TTL 會變成未知，並留下上次已知。</p>
-      </footer>
+      <p className="tagline">看泡泡就知道誰在做事、誰卡住、誰做完、誰未知。</p>
+      <OfficeFloor
+        agents={agents}
+        selectedId={selectedId}
+        onSelect={setSelectedId}
+        now={snapshot.data?.serverNow}
+        sourceLabel="Bot自行回報"
+      />
     </div>
   )
 }
@@ -88,15 +89,14 @@ function DemoOffice() {
 
   const agents = sceneAgents(office).map(toDesk)
   return (
-    <div className="page" data-view="demo" data-partition="demo">
-      <header className="top">
-        <div>
-          <p className="kicker">Agent Office</p>
-          <h1>代理人辦公室</h1>
-        </div>
-        <p className="banner" role="status" data-testid="mode-banner">DEMO・模擬資料・未連接真實 Agent</p>
+    <div className="office-page" data-view="demo" data-partition="demo">
+      <header className="topbar">
+        <h1>代理人辦公室</h1>
+        <p className="mode-badge mode-demo" role="status" data-testid="mode-banner"><span data-testid="demo-badge">模擬</span></p>
+        <p className="live-callout">未連接真實 Agent</p>
       </header>
-      <OfficeFloor agents={agents} selectedId={selectedId} onSelect={setSelectedId} demo />
+      <p className="tagline">看泡泡就知道誰在做事、誰卡住、誰做完、誰未知。這頁是模擬。</p>
+      <OfficeFloor agents={agents} selectedId={selectedId} onSelect={setSelectedId} demo sourceLabel="模擬" />
       <section className="sim" aria-label="模擬操作" data-testid="sim-panel">
         <h2>模擬操作</h2>
         <p className="hint">只改這間示範辦公室。不會寫進真實接收器。</p>
@@ -122,7 +122,7 @@ function DemoOffice() {
 
 function toDesk(agent: ReturnType<typeof sceneAgents>[number], index: number): DeskAgent {
   const at = agent.lastUpdatedAt ? Date.parse(agent.lastUpdatedAt) : null
-  const status = agent.status === "offline" ? "unknown" : agent.status
+  const status = agent.status
   return {
     agentId: agent.id,
     name: agent.name,

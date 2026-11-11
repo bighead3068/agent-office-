@@ -64,10 +64,10 @@ export function ConnectionNotice({ snapshot, emptyText }: { snapshot: Snapshot<u
   const { lastSuccessAt, error } = snapshot;
   const state = error ? (lastSuccessAt == null ? "unavailable" : "cached") : (lastSuccessAt == null ? "connecting" : "connected");
   const messages = {
-    connecting: "正在連接本機接收器。",
-    connected: "本機接收器已連線。",
-    unavailable: `尚未連上接收器。${emptyText}`,
-    cached: "連線中斷，以下是上次已知狀態。",
+    connecting: "連線中",
+    connected: "已連線",
+    unavailable: `斷線。${emptyText}`,
+    cached: "斷線，連線中斷，以下是上次已知狀態。",
   };
 
   return (

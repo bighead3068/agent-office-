@@ -8,6 +8,10 @@ Commercial use is allowed for the original art under the MIT terms at the bottom
 | --- | --- | --- | --- | --- | --- |
 | `public/fonts/Silkscreen-Regular.ttf` | Latin pixel wordmark | The Silkscreen Project Authors (Jason Kottke and contributors), https://github.com/googlefonts/silkscreen | SIL Open Font License 1.1 (`public/fonts/OFL.txt`) | Yes, under OFL | No |
 | `public/fonts/OFL.txt` | License text for Silkscreen | SIL International | SIL OFL 1.1 | n/a | No |
+| `public/fonts/fusion-pixel-12px-proportional-zh_hant.otf.woff2` | Pixel Traditional Chinese titles, counts, and status words | TakWolf and Fusion Pixel contributors, https://github.com/TakWolf/fusion-pixel-font . Includes Cubic 11. | SIL Open Font License 1.1 (`public/fonts/FusionPixel-OFL.txt`, `public/fonts/Cubic11-OFL.txt`) | Yes, under OFL | No |
+| `public/fonts/fusion-pixel-12px-proportional-latin.otf.woff2` | Pixel Latin letters and digits for the same family | TakWolf and Fusion Pixel contributors | SIL Open Font License 1.1 (`public/fonts/FusionPixel-OFL.txt`) | Yes, under OFL | No |
+| `public/fonts/FusionPixel-OFL.txt` | OFL text shipped with Fusion Pixel 12 | SIL International, packaged by TakWolf | SIL OFL 1.1 | n/a | No |
+| `public/fonts/Cubic11-OFL.txt` | OFL text for Cubic 11, a source of Fusion Pixel | ACh-K, packaged with Fusion Pixel | SIL OFL 1.1 | n/a | No |
 | `public/favicon.svg` | 16×16 office mark | Agent Office contributors | MIT, below | Yes | No |
 | `src/ui/OfficeFloor.tsx` | Desk people and plants, drawn as original SVG rectangles | Agent Office contributors | MIT, below | Yes | No |
 | `src/ui/OfficeFloor.css` | Warm wood floor, status bubbles, summary panel | Agent Office contributors | MIT, below | Yes | No |
@@ -15,7 +19,7 @@ Commercial use is allowed for the original art under the MIT terms at the bottom
 | `src/office/drawOffice.ts` | Older floor painter kept for the scene component | Agent Office contributors | MIT, below | Yes | No |
 | `src/office/icons.ts` | 7×7 status glyphs | Agent Office contributors | MIT, below | Yes | No |
 
-Chinese interface text uses the operating system's CJK font (for example Noto Sans CJK TC or Microsoft JhengHei). That font is not shipped in this repository, so it is not an asset file.
+Task lines use Noto Sans TC when the operating system has it, then Noto Sans CJK TC or WenQuanYi Micro Hei. The full Noto Sans TC file is not shipped here. It is the SIL Open Font License family from Google, not an image-model asset.
 
 ## MIT license for the original art
 

@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest"
-import { act, render, screen, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, within } from "@testing-library/react"
 import { readFileSync } from "node:fs"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { AgentOfficeApp } from "./AgentOfficeApp"
@@ -38,7 +38,7 @@ describe("v0.2 office", () => {
       row({ agentId: "bot-a", name: "阿法", seat: 1, effectiveStatus: "working", freshness: "fresh", taskTitle: "整理文件", reason: "report" }),
     ]))))
     render(<AgentOfficeApp />)
-    expect(screen.getByTestId("mode-banner").textContent).toContain("真實座位")
+    expect(screen.getByTestId("mode-banner").textContent).toContain("真實")
     expect(screen.queryByTestId("demo-badge")).toBeNull()
     const floor = await screen.findByTestId("agent-bot-a")
     expect(floor).toHaveTextContent("整理文件")
@@ -53,8 +53,8 @@ describe("v0.2 office", () => {
     vi.stubGlobal("fetch", fetch)
     window.history.replaceState(null, "", "/?view=demo")
     const view = render(<AgentOfficeApp />)
-    expect(screen.getByTestId("demo-badge")).toHaveTextContent("DEMO")
-    expect(screen.getByTestId("mode-banner").textContent).toContain("模擬資料")
+    expect(screen.getByTestId("demo-badge")).toHaveTextContent("模擬")
+    expect(screen.getByTestId("mode-banner").textContent).toContain("模擬")
     expect(document.body.textContent ?? "").toContain("林知夏")
     expect(fetch).not.toHaveBeenCalled()
     expect(document.querySelector("[data-view='demo']")).toBeTruthy()
@@ -64,7 +64,7 @@ describe("v0.2 office", () => {
     view.rerender(<AgentOfficeApp />)
     expect(screen.queryByTestId("demo-badge")).toBeNull()
     for (const name of DEMO_NAMES) expect(document.body.textContent ?? "").not.toContain(name)
-    expect(await screen.findByTestId("mode-banner")).toHaveTextContent("真實座位")
+    expect(await screen.findByTestId("mode-banner")).toHaveTextContent("真實")
   })
 
   it("sorts the summary and shows completed time without turning failed into blocked", async () => {
@@ -81,28 +81,31 @@ describe("v0.2 office", () => {
     expect(document.body.textContent ?? "").not.toContain("林知夏")
     expect(document.body.textContent ?? "").not.toContain("不該出現")
     const summary = screen.getByTestId("summary-panel")
-    const names = within(summary).getAllByRole("button").map((button) => button.querySelector("b")?.textContent)
-    expect(names).toEqual(["卡住", "失敗bot", "在做", "完工", "沒回報"])
+    const names = within(summary).getAllByRole("button").flatMap((button) => button.querySelector("b")?.textContent ?? [])
+    expect(names).toEqual(["卡住", "失敗bot", "在做"])
     const failed = screen.getByTestId("agent-fail")
     expect(failed).toHaveAttribute("data-status", "failed")
     expect(failed).toHaveTextContent("失敗")
     expect(failed).not.toHaveTextContent("受阻")
     const done = screen.getByTestId("agent-done")
-    expect(done).toHaveTextContent("已完成")
-    expect(done).toHaveTextContent("台北")
+    expect(done).toHaveTextContent("完成")
     expect(done).not.toHaveTextContent("明確閒置")
+    fireEvent.click(done.querySelector("button")!)
+    expect(screen.getByTestId("detail-card")).toHaveTextContent("台北")
+    expect(screen.getByTestId("detail-card")).toHaveTextContent("交卷")
     const missing = screen.getByTestId("agent-miss")
     expect(missing).toHaveAttribute("data-status", "unknown")
     expect(missing).toHaveTextContent("尚未回報")
     expect(missing).not.toHaveTextContent("明確閒置")
     const counts = Object.fromEntries(
-      [...document.querySelectorAll(".glance li")].map((node) => [node.getAttribute("data-glance"), node.querySelector("strong")?.textContent]),
+      [...document.querySelectorAll(".count-cell")].map((node) => [node.getAttribute("data-count"), node.querySelector("strong")?.textContent]),
     )
+    expect(counts.stuck).toBe("2")
     expect(counts.working).toBe("1")
-    expect(counts.blocked).toBe("1")
-    expect(counts.failed).toBe("1")
+    expect(counts.waiting).toBe("0")
     expect(counts.completed).toBe("1")
     expect(counts.unknown).toBe("1")
+    expect(screen.getByTestId("summary-total").textContent).toContain("共 5 人，分格加總 5")
   })
 
   it("keeps the last real snapshot when the receiver drops", async () => {
@@ -125,9 +128,9 @@ describe("v0.2 office", () => {
   it("keeps the summary readable without an inner scroller", () => {
     const css = readFileSync("src/ui/OfficeFloor.css", "utf8")
     expect(css).toMatch(/\.summary-dock\s*\{[^}]*overflow:\s*visible/)
-    expect(css).toMatch(/\.summary-row\s*\{[^}]*font-size:\s*16px/)
-    expect(css).toMatch(/\.bubble\s*\{[^}]*font-size:\s*18px/)
+    expect(css).toMatch(/\.bubble\s*\{[^}]*font-size:\s*16px/)
+    expect(css).toMatch(/\.task-pill\s*\{[^}]*font-size:\s*14px/)
     expect(css).not.toMatch(/\.summary-dock\s*\{[^}]*overflow:\s*auto/)
-    expect(css).not.toMatch(/\.summary-list\s*\{[^}]*overflow:\s*auto/)
+    expect(css).not.toMatch(/\.attention-list\s*\{[^}]*overflow:\s*auto/)
   })
 })
