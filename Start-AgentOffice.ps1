@@ -50,12 +50,52 @@ function Get-RuntimeMarker([string]$Path) {
   return ([BitConverter]::ToString($hash) -replace "-", "").ToLower().Substring(0, 16)
 }
 
+function Repair-ReceiverLog([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) { return }
+  try {
+    $probe = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    $probe.Dispose()
+    return
+  } catch {
+    Write-Warning "無法讀取 $Path（可能是空的 DACL）。嘗試還原目前使用者的權限。"
+  }
+  try {
+    $account = if ($env:USERDOMAIN -and $env:USERNAME) { "$env:USERDOMAIN\$env:USERNAME" } else { $env:USERNAME }
+    & icacls $Path /grant:r "${account}:(F)" | Out-Null
+    $probe = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    $probe.Dispose()
+    return
+  } catch {
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $rotated = "$Path.$stamp.bak"
+    try {
+      Rename-Item -LiteralPath $Path -NewName (Split-Path -Leaf $rotated) -ErrorAction Stop
+      Write-Warning "已把讀不到的紀錄改名為 $(Split-Path -Leaf $rotated)，這次啟動會寫新檔。"
+    } catch {
+      Write-Warning "無法還原或改名 $Path。$($_.Exception.Message)"
+    }
+  }
+}
+
 function Show-ReceiverLog([string]$Runtime) {
   foreach ($name in @("receiver.err.log", "receiver.out.log")) {
     $file = Join-Path $Runtime $name
-    if (Test-Path -LiteralPath $file) {
-      Write-Host "---- $name ----"
-      Get-Content -LiteralPath $file -Tail 20 | Write-Host
+    if (-not (Test-Path -LiteralPath $file)) { continue }
+    Repair-ReceiverLog $file
+    Write-Host "---- $name ----"
+    $stream = $null
+    $reader = $null
+    try {
+      $stream = [IO.File]::Open($file, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+      $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
+      $lines = @($reader.ReadToEnd() -split "`r?`n")
+      if ($lines.Count -gt 20) { $lines = $lines | Select-Object -Last 20 }
+      $lines | ForEach-Object { Write-Host $_ }
+    } catch {
+      Write-Warning "讀取 $name 失敗，啟動會繼續。$($_.Exception.Message)"
+    } finally {
+      if ($null -ne $reader) { $reader.Dispose() }
+      elseif ($null -ne $stream) { $stream.Dispose() }
     }
   }
 }
@@ -109,6 +149,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $Static "index.html"))) {
 New-Item -ItemType Directory -Force -Path $Runtime | Out-Null
 $errLog = Join-Path $Runtime "receiver.err.log"
 $outLog = Join-Path $Runtime "receiver.out.log"
+Repair-ReceiverLog $errLog
+Repair-ReceiverLog $outLog
 $arguments = @(
   "-u", $Server,
   "--host", "127.0.0.1",

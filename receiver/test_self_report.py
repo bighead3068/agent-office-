@@ -237,6 +237,34 @@ class StoreTests(unittest.TestCase):
         self.assertIn("legacy-token-value", line)
         self.assertFalse((self.runtime / "fresh-runtime" / "state.json").exists())
 
+    def test_directory_acl_is_inheritable_and_granted_before_inheritance_is_removed(self):
+        directory = self.runtime / "acl-dir"
+        directory.mkdir()
+        token = directory / "secret.header"
+        token.write_text("x", encoding="utf-8")
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(list(args))
+            return subprocess.CompletedProcess(args, 0)
+
+        with mock.patch.dict(os.environ, {"USERNAME": "tester", "USERDOMAIN": "DESK"}):
+            with mock.patch.object(srv.os, "name", "nt"):
+                with mock.patch("subprocess.run", side_effect=fake_run):
+                    srv.restrict(directory)
+                    directory_calls = list(calls)
+                    calls.clear()
+                    srv.restrict(token)
+        self.assertEqual(directory_calls[0][2], "/grant:r")
+        self.assertTrue(directory_calls[0][3].endswith(":(OI)(CI)(F)"))
+        self.assertNotIn("/inheritance:r", directory_calls[0])
+        self.assertEqual(directory_calls[1][2:], ["/inheritance:r"])
+        self.assertLess(directory_calls.index(directory_calls[0]), directory_calls.index(directory_calls[1]))
+        self.assertTrue(calls[0][3].endswith(":(F)"))
+        self.assertNotIn("(OI)", calls[0][3])
+        self.assertEqual(calls[1][2:], ["/inheritance:r"])
+        self.assertEqual(len({command[3].split(":")[0] for command in (directory_calls[0], calls[0])}), 1)
+
     def test_windows_icacls_failure_does_not_leave_a_header(self):
         fake = subprocess.CompletedProcess(args=["icacls"], returncode=1, stdout="", stderr="denied")
         with mock.patch.dict(os.environ, {"USERNAME": "tester", "USERDOMAIN": "DESK"}):

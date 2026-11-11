@@ -111,23 +111,38 @@ def default_runtime_dir(roster: str = "bot") -> Path:
     return base / RUNTIME_NAME
 
 
+def windows_account() -> str:
+    user = os.environ.get("USERNAME") or ""
+    domain = os.environ.get("USERDOMAIN") or ""
+    account = f"{domain}\\{user}" if domain and user else user
+    if not account:
+        raise OSError("Windows user is unknown; refusing to leave a credential file unrestricted")
+    return account
+
+
+def windows_acl_commands(path: Path, account: str) -> list[list[str]]:
+    """Grant the current user first, then drop inherited ACEs.
+
+    A directory ACE must be (OI)(CI) so files created later, including the
+    launcher logs, inherit access. Granting first means /inheritance:r cannot
+    leave the directory with an empty DACL. Files stay (F) only.
+    """
+    ace = "(OI)(CI)(F)" if path.is_dir() else "(F)"
+    target = str(path)
+    return [
+        ["icacls", target, "/grant:r", f"{account}:{ace}"],
+        ["icacls", target, "/inheritance:r"],
+    ]
+
+
 def restrict(path: Path) -> None:
     if os.name == "nt":
-        user = os.environ.get("USERNAME") or ""
-        domain = os.environ.get("USERDOMAIN") or ""
-        account = f"{domain}\\{user}" if domain and user else user
-        if not account:
-            raise OSError("Windows user is unknown; refusing to leave a credential file unrestricted")
         import subprocess
 
-        result = subprocess.run(
-            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:(F)"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise OSError("icacls failed to restrict the credential file")
+        for command in windows_acl_commands(path, windows_account()):
+            result = subprocess.run(command, check=False, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise OSError("icacls failed to restrict the credential file")
         return
     os.chmod(path, 0o600 if path.is_file() else 0o700)
 
