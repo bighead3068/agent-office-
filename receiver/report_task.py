@@ -13,10 +13,11 @@ Status semantics:
 - failed: this job failed. Stays failed, and is not reported as blocked.
 
 Repeating the same agent, job, and status reuses one event id, so the receiver
-dedupes it while that report is still the current one. After the same job is
-completed or failed, sending started again opens a new round instead of staying
-deduped. Pass --event-id to name a different event. A resend with the same
-event id and a different title is a conflict and does not overwrite.
+dedupes it. A started report is accepted only when that job id has never been
+reported for this agent. A newer timestamp cannot bring a finished job back,
+and the current job stays put. Pass --event-id to name a different event. A
+resend with the same event id and a different title is a conflict and does not
+overwrite.
 
 If this runtime has no header for the agent, a v0.1 header directory is read.
 Old state.json files are not read. Port 8793 is not served; point --url at 8795.

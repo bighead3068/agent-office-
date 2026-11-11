@@ -356,7 +356,7 @@ def payload_hash(event: dict) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def decide(state: Optional[dict], event: dict) -> dict:
+def decide(state: Optional[dict], event: dict, job_seen: bool = False) -> dict:
     kind = event["type"]
     phase = None if state is None else state["phase"]
     job = None if state is None else state["job_id"]
@@ -364,16 +364,19 @@ def decide(state: Optional[dict], event: dict) -> dict:
     if phase is None:
         if kind not in {"task.started", "task.idle"}:
             return {"ok": False, "error": "out_of_order"}
+        if kind == "task.started" and job_seen:
+            return {"ok": False, "error": "stale_job"}
         return {"ok": True}
     if event["at"] <= last_at:
         return {"ok": False, "error": "out_of_order"}
     same_job = event["jobId"] == job
-    if not same_job and kind != "task.started":
-        return {"ok": False, "error": "stale_job"}
     if kind == "task.started":
-        if same_job and phase == "working":
-            return {"ok": False, "error": "out_of_order"}
+        # A newer clock must not revive a job this agent already reported.
+        if job_seen:
+            return {"ok": False, "error": "stale_job"}
         return {"ok": True}
+    if not same_job:
+        return {"ok": False, "error": "stale_job"}
     if kind == "task.progress":
         if not same_job or phase != "working":
             return {"ok": False, "error": "out_of_order"}
@@ -509,18 +512,18 @@ class OfficeStore:
                     if existing["payload_hash"] != digest:
                         db.execute("ROLLBACK")
                         return 409, {"ok": False, "error": "event_id_conflict"}
-                    reopen = (
-                        event["type"] == "task.started"
-                        and state is not None
-                        and state["phase"] in {"completed", "failed"}
-                        and state["job_id"] == event["jobId"]
+                    db.execute("ROLLBACK")
+                    return 200, {"ok": True, "deduped": True}
+                seen = False
+                if event["type"] == "task.started":
+                    seen = (
+                        db.execute(
+                            "SELECT 1 FROM events WHERE agent_id = ? AND job_id = ? LIMIT 1",
+                            (bound_id, event["jobId"]),
+                        ).fetchone()
+                        is not None
                     )
-                    if not reopen:
-                        db.execute("ROLLBACK")
-                        return 200, {"ok": True, "deduped": True}
-                    suffix = hashlib.sha256(f"{event['eventId']}\n{state['last_event_id']}".encode()).hexdigest()[:8]
-                    event = {**event, "eventId": f"{event['eventId'][:71]}-{suffix}"}
-                decision = decide(state, event)
+                decision = decide(state, event, job_seen=seen)
                 if not decision["ok"]:
                     db.execute("ROLLBACK")
                     return 409, decision
