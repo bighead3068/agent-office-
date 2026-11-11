@@ -19,6 +19,7 @@ await build({
   format: "esm",
   minify: true,
   jsx: "automatic",
+  loader: { ".ttf": "file" },
 });
 
 const localHtml = html

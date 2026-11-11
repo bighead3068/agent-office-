@@ -1,14 +1,17 @@
 {
   "name": "agent-office",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 0.0.0.0 --port 43123 --strictPort",
+    "dev": "vite --host 127.0.0.1 --port 43123 --strictPort",
     "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0 --port 43123 --strictPort",
+    "preview": "vite preview --host 127.0.0.1 --port 43123 --strictPort",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "office": "node scripts/start-office.mjs",
+    "office:register": "node scripts/register-agent.mjs",
+    "standalone": "npm run build && node scripts/build-standalone.mjs"
   },
   "dependencies": {
     "react": "^19.1.1",
@@ -24,6 +27,7 @@
     "@vitejs/plugin-react": "^5.0.2",
     "jsdom": "^31.0.0",
     "typescript": "^5.9.2",
+    "esbuild": "0.25.11",
     "vite": "^6.3.6",
     "vitest": "^3.2.4"
   }

@@ -65,6 +65,9 @@ export function assignSeats(
   previousOwners: Readonly<Record<SeatId, string | null>>,
   rotateSeats = false,
 ): SeatAssignment {
+  // v0.2 desks stay with their owner. New agents may take an empty seat only.
+  void rotateSeats
+  rotateSeats = false
   const byId = new Map<string, OfficeAgent>()
   for (const agent of agents) {
     if (!byId.has(agent.id)) byId.set(agent.id, agent)

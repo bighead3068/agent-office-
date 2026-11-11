@@ -4,11 +4,23 @@
 Python 3.10 stdlib only. Reads only that agent's header file. Does not print
 the header or the token. Loopback HTTP only. This does not start a task by
 itself; the caller has to be that bot.
+
+Status semantics:
+- started: this job is working. Requires a task title. Not idle.
+- progress: same working job, optional new title. Does not finish it.
+- completed: this job finished. Stays completed until the receiver TTL; it does
+  not become idle. After the TTL the office shows unknown and keeps the result.
+- failed: this job failed. Stays failed, and is not reported as blocked.
+
+Repeating the same agent, job, and status reuses one event id, so the receiver
+dedupes it. Pass --event-id to name a different event. A resend with the same
+event id and a different title is a conflict and does not overwrite.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -36,7 +48,7 @@ def normalize_url(url: str) -> str:
         path = "/api/self-report"
     if path not in {"/api/self-report", "/api/fixture-report"}:
         raise ValueError("url path must be the self-report endpoint")
-    return f"http://{parsed.hostname}:{parsed.port or 8793}{path}"
+    return f"http://{parsed.hostname}:{parsed.port or srv.OFFICE_PORT}{path}"
 
 
 def read_own_header(runtime: Path, agent_id: str) -> str:
@@ -47,6 +59,11 @@ def read_own_header(runtime: Path, agent_id: str) -> str:
     if not line.startswith("Authorization: Bearer ") or line == "Authorization: Bearer":
         raise ValueError("header file is not usable")
     return line
+
+
+def default_event_id(agent_id: str, job_id: str, status: str) -> str:
+    digest = hashlib.sha256(f"{agent_id}\n{job_id}\n{status}".encode("utf-8")).hexdigest()[:40]
+    return f"idem-{digest}"
 
 
 def build_body(agent_id: str, job_id: str, status: str, title: str | None, event_id: str | None, at: int | None) -> dict:
@@ -60,7 +77,7 @@ def build_body(agent_id: str, job_id: str, status: str, title: str | None, event
         raise ValueError("started requires a task title")
     stamp = int(time.time() * 1000) if at is None else at
     body = {
-        "eventId": event_id or f"cli-{agent_id[:8]}-{status}-{stamp}",
+        "eventId": event_id or default_event_id(agent_id, job_id, status),
         "type": STATUS_TYPE[status],
         "jobId": job_id,
         "at": stamp,
@@ -82,7 +99,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--task", default="")
     parser.add_argument("--task-file", default="")
     parser.add_argument("--runtime-dir", default="")
-    parser.add_argument("--url", default="http://127.0.0.1:8793/api/self-report")
+    parser.add_argument("--url", default=f"http://127.0.0.1:{srv.OFFICE_PORT}/api/self-report")
     parser.add_argument("--event-id", default="")
     parser.add_argument("--at", type=int, default=0)
     args = parser.parse_args(argv)

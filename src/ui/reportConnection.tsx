@@ -66,8 +66,8 @@ export function ConnectionNotice({ snapshot, emptyText }: { snapshot: Snapshot<u
   const messages = {
     connecting: "正在連接本機接收器。",
     connected: "本機接收器已連線。",
-    unavailable: `本機接收器暫時無法讀取。${emptyText}`,
-    cached: "本機接收器更新失敗。下方顯示上次成功讀取的快取，狀態可能已改變。",
+    unavailable: `尚未連上接收器。${emptyText}`,
+    cached: "連線中斷，以下是上次已知狀態。",
   };
 
   return (

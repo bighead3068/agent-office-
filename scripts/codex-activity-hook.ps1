@@ -30,7 +30,7 @@ try {
         return
     }
 
-    $service = 'agent-office-codex-report'
+    $service = 'agent-office'
     $headerPath = Join-Path $env:LOCALAPPDATA "$service\headers\codex-hook.header"
     if (-not (Test-Path -LiteralPath $headerPath -PathType Leaf)) {
         return
@@ -42,7 +42,7 @@ try {
     $handler.AllowAutoRedirect = $false
     $http = [Net.Http.HttpClient]::new($handler)
     $http.Timeout = [TimeSpan]::FromMilliseconds(650)
-    $url = 'http://127.0.0.1:8794'
+    $url = 'http://127.0.0.1:8795'
     $health = ConvertFrom-Json -InputObject $http.GetStringAsync("$url/health").GetAwaiter().GetResult()
     if ($health.ok -isnot [bool] -or -not $health.ok -or
         $health.service -cne $service -or $health.evidenceType -cne 'bot-self-report' -or

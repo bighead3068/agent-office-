@@ -19,7 +19,7 @@ else:
     import self_report_server as srv
     from codex_activity import WORKER_RESULTS, valid_event
 
-DEFAULT_URL = f"http://127.0.0.1:{srv.CODEX_PORT}{srv.CODEX_ACTIVITY_PATH}"
+DEFAULT_URL = f"http://127.0.0.1:{srv.OFFICE_PORT}{srv.CODEX_ACTIVITY_PATH}"
 HEADER_RE = re.compile(r"Authorization: (Bearer [A-Za-z0-9_-]+)")
 
 
@@ -35,7 +35,7 @@ def receiver_port(url: str) -> int:
         or parsed.port == 0
     ):
         raise ValueError("expected a loopback Codex activity endpoint")
-    return parsed.port if parsed.port is not None else srv.CODEX_PORT
+    return parsed.port if parsed.port is not None else srv.OFFICE_PORT
 
 
 def build_report(args: argparse.Namespace) -> dict:

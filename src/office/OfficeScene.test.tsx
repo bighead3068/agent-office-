@@ -164,16 +164,16 @@ describe('OfficeScene', () => {
   it.each(['task change', 'away', 'disconnect', 'reduced motion'] as const)(
     'immediately ends a playful break on %s',
     (reason) => {
-      const sol = makeAgent({ id: 'sol', name: 'Sol', status: 'completed', task: { title: 'First task' } })
+      const sol = makeAgent({ id: 'sol', name: 'Sol', status: 'idle', task: { title: 'First task' } })
       const props = { playful: true, config: timing, reducedMotion: false }
       const { rerender } = render(<OfficeScene {...props} now={0} agents={[sol]} />)
       rerender(<OfficeScene {...props} now={4000} agents={[sol]} />)
-      const seat = screen.getByRole('button', { name: /Sol.*已完成/ })
+      const seat = screen.getByRole('button', { name: /Sol.*明確閒置/ })
       expect(within(seat).getByText('偷懶中')).toBeTruthy()
       expect(seat.getAttribute('data-pose')).toBe('nap')
-      expect(seat.getAttribute('data-status')).toBe('completed')
-      expect(screen.getByRole('region', { name: '座位概況' }).querySelector('[data-count="completed"]')?.textContent)
-        .toBe('已完成1')
+      expect(seat.getAttribute('data-status')).toBe('idle')
+      expect(screen.getByRole('region', { name: '座位概況' }).querySelector('[data-count="idle"]')?.textContent)
+        .toBe('明確閒置1')
 
       const updated: OfficeAgent = { ...sol }
       if (reason === 'task change') updated.task = { title: 'Next task' }
@@ -219,33 +219,27 @@ describe('OfficeScene', () => {
     const props = {
       playful: true,
       config: timing,
-      agents: [makeAgent({ id: 'sol', name: 'Sol', status: 'completed' })],
+      agents: [makeAgent({ id: 'sol', name: 'Sol', status: 'idle' })],
     }
     const { rerender } = render(<OfficeScene {...props} now={0} />)
     rerender(<OfficeScene {...props} now={10_000} />)
-    const seat = screen.getByRole('button', { name: /Sol.*已完成/ })
+    const seat = screen.getByRole('button', { name: /Sol.*明確閒置/ })
     expect(within(seat).getByText('偷懶中')).toBeTruthy()
     rerender(<OfficeScene {...props} now={12_400} />)
     expect(within(seat).getByText('假裝在忙')).toBeTruthy()
-    expect(seat.getAttribute('data-pose')).toBe('sit')
+    expect(seat.getAttribute('data-pose')).toBe('breathe')
   })
 
-  it('keeps a per-agent break cooldown after a desk is displaced and reclaimed', () => {
+  it('does not give a new agent a finished owner\'s desk', () => {
     const sol = makeAgent({ id: 'sol', name: 'Sol', status: 'completed' })
     const others = ['a', 'b', 'c', 'd'].map((id) => makeAgent({ id, status: 'working' }))
-    const incoming = makeAgent({ id: 'incoming', status: 'working' })
+    const incoming = makeAgent({ id: 'incoming', name: 'Incoming', status: 'working' })
     const props = { playful: true, rotateSeats: true, config: timing }
     const { rerender } = render(<OfficeScene {...props} now={0} agents={[sol, ...others]} />)
-    rerender(<OfficeScene {...props} now={4000} agents={[sol, ...others]} />)
-    expect(screen.getByRole('button', { name: /Sol/ }).getAttribute('data-egg')).toBe('nap')
-    rerender(<OfficeScene {...props} now={4001} agents={[sol, ...others, incoming]} />)
-    expect(screen.queryByRole('button', { name: /Sol/ })).toBeNull()
-
-    rerender(<OfficeScene {...props} now={4002} agents={[{ ...sol, status: 'working' }, ...others.slice(1), incoming]} />)
-    const seatedAgain = [sol, ...others.slice(1), incoming]
-    rerender(<OfficeScene {...props} now={4003} agents={seatedAgain} />)
-    rerender(<OfficeScene {...props} now={7503} agents={seatedAgain} />)
-    expect(screen.getByRole('button', { name: /Sol/ }).getAttribute('data-egg')).toBe('')
+    const seat = screen.getByRole('button', { name: /Sol/ }).getAttribute('data-seat')
+    rerender(<OfficeScene {...props} now={1} agents={[sol, ...others, incoming]} />)
+    expect(screen.getByRole('button', { name: /Sol/ }).getAttribute('data-seat')).toBe(seat)
+    expect(screen.queryByRole('button', { name: /Incoming/ })).toBeNull()
   })
 
   it('renders stale as frozen last-known cues and offline as a dimmed, clickable desk', async () => {

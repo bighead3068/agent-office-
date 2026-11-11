@@ -1,131 +1,113 @@
-# 代理人辦公室 · Agent Office v0.1
+# 代理人辦公室 · Agent Office v0.2
 
-**SIMULATION ONLY for the demo floor.** 示範樓層沒有連接真實 Grok Bot。Real Grok Bot is **NOT** connected there.
+預設畫面是**已登記的真實 bot**。進門三秒可以分出誰在工作、誰受阻、誰做完、誰未知。示範資料只在網址加上 `?view=demo` 時出現，而且不會寫進真實接收器。
 
-另外有一個本機自報接收器。它的畫面固定寫著 **Bot自行回報・非平台原生**。那不是平台原生連線。父層 Bot 還沒用本機 Shell 送出事件之前，未知狀態不是「已經看見真實機器人」。
+這一版只有一個本機接收器，聽 `127.0.0.1:8795`。v0.1 的 `8792`、`8793`、`8794` **不再服務**，程式拒絕綁定這些埠，也不會自動改去別的埠。
 
-示範資料會一直顯示：**模擬資料・未連接真實 Agent**。
+## 狀態是什麼意思
 
-## 執行
+| 畫面上的字 | 意思 |
+| --- | --- |
+| 工作中 | 這個 bot 回報了開始或進度。 |
+| 等待中 | 明確回報正在等。 |
+| 受阻 | 明確回報被卡住。 |
+| 失敗 | 這件工作失敗。失敗不會被畫成受阻。 |
+| 已完成 | 這件工作做完，旁邊會有完成時間。完成不會自己變成閒置。 |
+| 未知 | 還沒回報，或回報已超過 TTL。未知不是閒置。 |
+| 明確閒置 | 只有對方真的送出 `task.idle` 才會出現。心跳不能證明閒置。 |
 
-需要 Node.js 20 以上。
+過期時，有效狀態變成**未知**，座位上會標**過期**，上次已知的狀態和任務標題還留著。
+
+**完成和失敗也會過期。** 規則是：`現在 - lastReportAt <= ttlMs` 仍算新鮮（剛好等於 TTL 也算新鮮）；再超過就是未知。預設 TTL 是 300 秒，所以到期前 1 秒仍是新鮮，到期後 1 秒是未知。
+
+監督總覽的排序固定為：受阻 > 失敗 > 工作中 > 等待中 > 已完成 > 未知 > 明確閒置。同一狀態再依座位編號。人數加總等於 bot 總數。12 人以內，右側總覽不另開一層捲動。
+
+## 怎麼啟動
+
+需要 Node.js 20 以上、Python 3.10 以上。接收器只綁 `127.0.0.1`，不需要系統管理員，也不會改防火牆。
 
 ```bash
-npm install
-npm run dev
+npm ci
+npm run office
 ```
 
-開發伺服器開在 <http://127.0.0.1:43123>。
+啟動器會檢查 Python、Node、依賴和埠，建置頁面，等 `/health` 回覆，然後打開：
 
-```bash
-npm test
-npm run typecheck
-npm run build
+<http://127.0.0.1:8795/>
+
+再執行一次不會開第二個行程。它只會告訴你已經在跑，並印出網址與 runtime 路徑。權杖不會印出來。
+
+Windows 用解壓縮後那一層的 PowerShell：
+
+```powershell
+if (-not (Test-Path -LiteralPath .\receiver\self_report_server.py)) { throw "請在解壓縮後的第一層執行，不要再進一層資料夾。" }
+powershell -ExecutionPolicy Bypass -File .\Start-AgentOffice.ps1
 ```
 
-`npm run build` 產出 `dist/`。本機預覽打包結果：
+`Start-AgentOffice.ps1` 裡也有同樣的 `Test-Path`。壓縮檔的檔案就在 zip 根目錄，沒有再包一層 `agent-office/`。
+
+這份說明在 Linux 上寫過並跑過 `npm run office` 的檢查流程。**沒有在真實 Windows 上執行過 `Start-AgentOffice.ps1`。** 腳本沒有向 Windows 要管理員權限，也沒有改系統設定；若你的電腦擋了 `Start-Process` 或 Python 不在 PATH，請依錯誤訊息安裝 Python 3.10 或設定 `PYTHON`。
+
+## 怎麼加一個 bot
+
+Runtime 在 git 外面：
+
+- Windows：`%LOCALAPPDATA%\agent-office`
+- 其他系統：`$XDG_DATA_HOME/agent-office`，沒設的話是 `~/.local/share/agent-office`
+
+權杖只寫在 `headers/<agent-id>.header`，權限只給目前的使用者。註冊時只印這個檔案路徑和一條不含權杖的回報命令。
 
 ```bash
-npx serve dist
+npm run office:register -- --agent-id bot-alpha --display-name "阿法"
 ```
 
 或：
 
 ```bash
-npm run preview
+python3 receiver/register_agent.py --agent-id bot-alpha --display-name "阿法" --runtime-dir "$HOME/.local/share/agent-office"
 ```
 
-## 直接開啟單檔
+同一個 agent id 再註冊會失敗，不會悄悄換掉身分。要換權杖才加 `--rotate`，而且顯示名稱必須和原來一樣。
 
-不裝依賴時，下載倉庫根目錄的 [`standalone.html`](./standalone.html)，用瀏覽器直接打開。檔案內已含腳本與樣式，不連外網，也不會連到真實 Grok Bot。
-
-在 GitHub 打開該檔後，可用 Download 或 Raw 存到本機再打開。
-
-## 這間辦公室
-
-示範模式有四位代理人，五個固定座位，第五席空著。點人，或用方向鍵、數字鍵 1–4，看手上的事、狀態與新鮮度。監督總覽是唯讀的。
-
-可以播放模擬、切換情境，或送出工作、等待、受阻、失敗、恢復、完成、明確閒置、心跳、斷線、重新連線、資料過期。失敗和受阻、等待是不同狀態。失敗之後可以恢復，或接一件新工作。失敗不會變成閒置，也不會出現打盹。
-
-人物外形跟著座位，不跟著姓名。示範人名只存在模擬資料裡。`standalone.html` 只有示範，不會讀自報。
-
-## 本機自報（不是平台連線）
-
-接收器是 Python 3.10 標準庫。預設綁 `127.0.0.1:8792`，可用參數改，但不要為此修改防火牆，也不要把它當成可以放到網際網路上的服務。瀏覽器只同源讀取，寫入權杖不會進前端。回應不送萬用字元憑證 CORS。
-
-權杖在啟動時產生，chmod 600（Windows 用 icacls 只留給目前使用者），放在執行目錄之外：
-
-- Windows：`%LOCALAPPDATA%\agent-office-self-report\token-auth.header`
-- 其他系統：`~/.local/share/agent-office-self-report/token-auth.header`
-
-不要把權杖印出來，也不要提交。允許的來源與代理人 id 只有 `5be5c071-b5bd-4ed5-ba91-5c474954d171`。呼叫端自己寫的 label 不是身分。夾具使用另一把權杖與另一個 partition，預設關閉。開始是工作中，同一個 job 的完成或失敗是不同的結束狀態。沒有回報或超過 TTL 是未知，不會補心跳，也不會推成閒置。
-
-開發機器：
+接著用它印出的命令回報。`report_task.py` 仍接受原來的參數：`--agent-id --job-id --status --task --task-file --runtime-dir --url`，輸出仍是 `report_status` 和 `result`。
 
 ```bash
+python3 receiver/report_task.py \
+  --agent-id bot-alpha \
+  --job-id job-1 \
+  --status started \
+  --task "整理文件" \
+  --runtime-dir "$HOME/.local/share/agent-office" \
+  --url http://127.0.0.1:8795/api/self-report
+```
+
+同一個 bot、同一件工作、同一個狀態再送一次會去重，不會改 `lastReportAt`。同一個 event id 但標題不同會被拒絕，不會覆寫。比較舊的時間、或舊工作的事件，也不會蓋掉較新的工作。
+
+`started` 是工作中，`completed` 是做完，`failed` 是失敗。接收器暫時沒開時，命令結束碼是 3，`result=unreachable`。
+
+Codex 活動走同一個埠的 `/api/codex-activity`。Hook 權杖在 `headers/codex-hook.header`。沒有先登記的 bot 不會自動搶座位。
+
+## 讀取資料的授權
+
+GET `/`、`/api/state`、`/api/self-report`、`/health` **沒有** bearer 權杖。這是刻意的：瀏覽器要能畫畫面，而權杖不該進前端。這只在接收器拒絕 `127.0.0.1` 以外的綁定時才成立。啟動時會印出這個警告。寫入一律要權杖，而且不看 `Origin`。回應不送跨網域 CORS。
+
+`/health` 只含版本、服務名稱和 receiver id，沒有權杖。
+
+## 示範
+
+<http://127.0.0.1:8795/?view=demo>
+
+這一頁有 DEMO 標示，用的是模擬人名，不會把事件 POST 到真實接收器。回到沒有 `view=demo` 的網址就只剩真實座位。
+
+不裝接收器時，可以打開倉庫根目錄的 [`standalone.html`](./standalone.html)。它一樣預設是真實畫面（打不開接收器就顯示連線中斷），示範仍要加 `?view=demo`。
+
+## 檢查
+
+```bash
+npm test
+npm run typecheck
 npm run build
-python3 receiver/self_report_server.py --host 127.0.0.1 --port 8792 --static-dir dist
+python3 -m unittest discover -s receiver -t receiver
 ```
 
-Windows 桌面請用壓縮檔 `packaging/agent-office-self-report-box.zip`，不要在那台機器上 clone 或改碼。說明在 `receiver/README-BOX.md`。
-
-```powershell
-cd $env:USERPROFILE\Desktop\agent-office-self-report
-powershell -ExecutionPolicy Bypass -File .\Start-AgentOffice.ps1
-```
-
-8792 上已經在跑的單來源接收器不要關，也不要覆寫它的 runtime。四個受信任來源用另一個包，埠 `127.0.0.1:8793`，runtime `%LOCALAPPDATA%\agent-office-multi-report`。說明在 `receiver/README-MULTI.md`。每個 bot 只讀自己的 header，父層不要代送。
-
-```powershell
-cd $env:USERPROFILE\Desktop\agent-office-multi-report
-powershell -ExecutionPolicy Bypass -File .\Start-MultiReport.ps1
-```
-
-舊的單來源 GET 確認：
-
-```powershell
-curl.exe -sS "http://127.0.0.1:8792/api/self-report"
-Start-Process "http://127.0.0.1:8792/?view=real"
-```
-
-## Codex 子代理看板
-
-開啟 [Codex 子代理看板](http://127.0.0.1:8794/?view=codex)。點選席位可查看最近的任務、事件時間線和已知耗時。時間線使用接收器提供的最近 20 筆自報事件。回報過期後，席位會分開顯示目前狀態和上次已知結果。接收器短暫離線時，看板會保留最後一次成功讀到的畫面並標註時間。
-
-動態辦公室會在瀏覽器記住工位安排。新子代理回報開始時會自動入座，滿席時可接替已離席或已結束任務的代理；忙碌的代理保留工位。曾有回報但已逾時的代理會顯示「離席」，席位詳情仍保留最後的任務和時間。新鮮的完工回報可觸發短暫的摸魚彩蛋，時間軸照常顯示任務結果。點選貓主管可查看座位概況。啟用系統減少動態效果時，辦公室會保留靜態提示。
-
-第一次複製專案後先執行 `npm ci`。Windows 可在專案根目錄的 PowerShell 7 執行以下指令。啟動器會準備前端、檢查本機接收器並開啟看板。
-
-```powershell
-.\scripts\Start-CodexOffice.ps1
-```
-
-加 `-NoBrowser` 可只啟動接收器。也可以用 `npm ci`、`npm run build` 和 `python receiver/self_report_server.py --roster codex --static-dir dist` 手動啟動，需要 Python 3.10 以上。Windows 的應用程式控制政策若阻擋 Rollup 原生模組，可用 `node scripts/build-local.mjs` 產生靜態檔，將 `--static-dir` 改為 `.agent-office-runtime/codex-dist`。
-
-### 派工與自行回報
-
-打開看板的「產生派工提示詞」，輸入任務與驗收條件，按「複製提示詞」後貼到 Codex。新子代理在 `office-live` 工作階段用自己的代理 ID 和任務 ID 回報，畫面會自動安排工位。
-
-請子代理用同一個代理 ID 和 job ID 回報開始與結束。以下是一筆本機動態回報的範例。
-
-```powershell
-$python = Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
-$reportArgs = @(
-  'receiver/report_activity.py', '--session-id', 'office-live',
-  '--agent-id', ('agent-' + [guid]::NewGuid().ToString('N')),
-  '--job-id', ('job-' + [guid]::NewGuid().ToString('N')),
-  '--runtime-dir', (Join-Path $env:LOCALAPPDATA 'agent-office-codex-report'),
-  '--url', 'http://127.0.0.1:8794/api/codex-activity'
-)
-& $python @reportArgs --status started --task '檢查 Codex 看板'
-# 執行指派的工作，再回報 completed 或 failed。
-& $python @reportArgs --status completed
-```
-
-原有四個固定席位與 `receiver/report_task.py` 仍可透過「自行回報」讀取和使用。動態派工的結果會出現在「動態辦公室」。
-
-### Codex Hook 活動
-
-在此專案的 Codex 對話中，透過輸入框的 **Review hooks** 或 **Settings → Hooks** 審查並信任專案設定。Windows Hook 需要能執行 `pwsh.exe`。開啟看板的「動態辦公室」後，可以按 Codex 對話切換，查看每位子代理的工位與啟動、結束事件。Hook 的結束事件表示該次子代理活動停止；明確的完成或失敗結果由自行回報提供。設定與信任流程見 [OpenAI Hooks 文件](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks)。
-
-Hook 只送本機接收器所需的事件種類、對話 ID、回合 ID、子代理 ID 和類型。動態辦公室和固定席位使用各自的寫入權杖，資料存於 `%LOCALAPPDATA%\agent-office-codex-report`。請勿公開此本機服務或權杖。
+畫面素材與授權見 [ASSETS.md](./ASSETS.md)。

@@ -36,15 +36,15 @@ export function createAgentEggState(): AgentEggState {
 }
 
 /**
- * Breaks require a present, fresh, connected agent with an eligible status.
- * A playful floor also allows a brief break after completion.
+ * Breaks require an explicit idle agent who is present, fresh, and connected.
+ * Completed, unknown, stale, and a playful flag never count as idle.
  */
 export function isEasterEggEligible(
   agent: Pick<OfficeAgent, 'status' | 'freshness' | 'connected' | 'deskPresence'>,
   playful = false,
 ): boolean {
-  return (agent.status === 'idle' || (playful && agent.status === 'completed'))
-    && agent.freshness === 'fresh' && agent.connected === true && !agent.deskPresence
+  void playful
+  return agent.status === 'idle' && agent.freshness === 'fresh' && agent.connected === true && !agent.deskPresence
 }
 
 function playfulDelay(id: string, occurrence: number): number {

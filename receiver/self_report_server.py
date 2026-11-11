@@ -1,81 +1,114 @@
 #!/usr/bin/env python3
-"""Local multi-source self-report receiver.
+"""Agent Office v0.2 local receiver.
 
-Python 3.10 stdlib only. The default Bot roster uses 127.0.0.1:8793 and
-agent-office-multi-report. The optional Codex roster uses 127.0.0.1:8794
-and agent-office-codex-report. Port 8792 and agent-office-self-report are
-reserved for the existing single-agent receiver.
+One process, one port, loopback only. It accepts bot self-reports and Codex
+activity. Tokens stay in per-agent header files under the runtime directory
+(outside the git checkout). SQLite in that same directory is the office state.
 
-Each trusted source gets its own header file. The token is never printed.
-A request cannot choose a different source than the token. GET is same-origin,
-unauthenticated, and sends no credential CORS. Freshness is calculated when
-the snapshot is read. Nothing writes a fake heartbeat, idle, or timer status.
+GET is unauthenticated on purpose: the browser on this machine must be able to
+draw the floor. That is safe only because the process refuses every bind except
+127.0.0.1 and never sends credential CORS. Write routes require a bearer token
+and do not look at Origin.
+
+Terminal reports (completed and failed) expire the same way as other reports.
+After lastReportAt + ttlMs the effective status becomes unknown, freshness is
+stale, and lastKnownStatus stays. Equality with the TTL is still fresh; one
+millisecond past it is unknown. Nothing here invents idle. Idle is stored only
+when a caller sends task.idle.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import secrets
-import socket
+import sqlite3
 import sys
 import threading
 import time
+import uuid
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Iterator, Optional
+from urllib.parse import urlparse
 
+VERSION = "0.2.0"
 EVIDENCE_TYPE = "bot-self-report"
-LEGACY_PORT = 8792
-BOT_PORT = 8793
-CODEX_PORT = 8794
-LEGACY_RUNTIME_NAME = "agent-office-self-report"
-RUNTIME_NAME = "agent-office-multi-report"
-CODEX_RUNTIME_NAME = "agent-office-codex-report"
+SERVICE_NAME = "agent-office"
+OFFICE_PORT = 8795
+RETIRED_PORTS = {8792, 8793, 8794}
+RUNTIME_NAME = "agent-office"
+LEGACY_RUNTIME_NAMES = {
+    "agent-office-self-report",
+    "agent-office-multi-report",
+    "agent-office-codex-report",
+}
 CODEX_ACTIVITY_PATH = "/api/codex-activity"
 CODEX_HOOK_SOURCE = "codex-hook"
-FIXTURE_SOURCE = "fixture-local"
-FIXTURE_AGENT = "fixture-agent"
-FIXTURE_NAME = "夾具代理人"
+CODEX_PORT = OFFICE_PORT
 MAX_BODY = 4096
 MAX_TITLE = 160
-MAX_SEEN = 500
-MAX_RECENT = 200
+MAX_RECENT = 20
 FUTURE_SKEW_MS = 60_000
 DEFAULT_TTL_MS = 300_000
-STATE_VERSION = 2
 ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
-LABEL_RE = re.compile(r"^[A-Za-z0-9\u4e00-\u9fff ._-]{1,32}$")
+DISPLAY_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,40}$")
 TITLE_BAD = re.compile(r"[\x00-\x1f\x7f]")
-TRUSTED = (
-    {"agentId": "5be5c071-b5bd-4ed5-ba91-5c474954d171", "name": "專案／產品助手（協調）"},
-    {"agentId": "7a961a88-8d6c-4afe-ada6-e28542084d0c", "name": "Agent Office 開發助手"},
-    {"agentId": "892250dc-215a-4817-b9ae-64e538a22fe3", "name": "Agent Office 互動設計"},
-    {"agentId": "cf8d7f4a-569c-48f8-86e0-a2d8b543c4e1", "name": "Agent Office 測試與授權"},
-)
-TRUSTED_IDS = tuple(item["agentId"] for item in TRUSTED)
-COORDINATOR_ID = TRUSTED_IDS[0]
-CODEX = (
-    {"agentId": "codex-lead", "name": "Codex 協調"},
-    {"agentId": "codex-api", "name": "Codex 接收器"},
-    {"agentId": "codex-ui", "name": "Codex 看板"},
-    {"agentId": "codex-qa", "name": "Codex 驗證"},
-)
-ROSTERS = {"bot": TRUSTED, "codex": CODEX}
+SECRET_RE = re.compile(r"Bearer\s+\S+|token_urlsafe\([^)]*\)", re.IGNORECASE)
 ALLOWED_FIELDS = {"eventId", "type", "jobId", "at", "sourceId", "agentId", "label", "taskTitle"}
-ALLOWED_TYPES = {"task.started", "task.completed", "task.failed", "task.progress"}
+ALLOWED_TYPES = {
+    "task.started",
+    "task.progress",
+    "task.waiting",
+    "task.blocked",
+    "task.completed",
+    "task.failed",
+    "task.idle",
+}
+PHASE_BY_TYPE = {
+    "task.started": "working",
+    "task.progress": "working",
+    "task.waiting": "waiting",
+    "task.blocked": "blocked",
+    "task.completed": "completed",
+    "task.failed": "failed",
+    "task.idle": "idle",
+}
+OPEN_PHASES = {"working", "waiting", "blocked"}
+TOP_LEVEL_FORBIDDEN = {
+    "sourceId",
+    "agentId",
+    "effectiveStatus",
+    "lastKnownStatus",
+    "freshness",
+    "reason",
+    "jobId",
+    "taskTitle",
+    "startedAt",
+    "terminalAt",
+    "lastReportAt",
+    "callerLabel",
+    "provenance",
+}
+
+
+def redact(text: str) -> str:
+    return SECRET_RE.sub("Bearer [redacted]", text)
 
 
 def default_runtime_dir(roster: str = "bot") -> Path:
-    name = CODEX_RUNTIME_NAME if roster == "codex" else RUNTIME_NAME
+    """One runtime directory for self-report and Codex activity."""
+    del roster
     if os.name == "nt":
         root = os.environ.get("LOCALAPPDATA") or str(Path.home())
-        return Path(root) / name
+        return Path(root) / RUNTIME_NAME
     data = os.environ.get("XDG_DATA_HOME")
     base = Path(data) if data else Path.home() / ".local" / "share"
-    return base / name
+    return base / RUNTIME_NAME
 
 
 def restrict(path: Path) -> None:
@@ -117,36 +150,85 @@ def header_file(runtime: Path, agent_id: str) -> Path:
     return path
 
 
+def read_token(runtime: Path, agent_id: str) -> Optional[str]:
+    path = header_file(runtime, agent_id)
+    if not path.is_file():
+        return None
+    line = path.read_text(encoding="utf-8").strip()
+    prefix = "Authorization: Bearer "
+    if not line.startswith(prefix) or line == prefix.rstrip():
+        return None
+    token = line[len(prefix) :].strip()
+    if not token or not token.isascii() or " " in token:
+        return None
+    return token
+
+
 def issue_header(runtime: Path, agent_id: str) -> str:
     token = secrets.token_urlsafe(32)
     write_private(header_file(runtime, agent_id), f"Authorization: Bearer {token}\n")
     return token
 
 
-def empty_state(partition: str, roster: tuple[dict, ...]) -> dict:
-    return {
-        "version": STATE_VERSION,
-        "partition": partition,
-        "seen": [],
-        "events": [],
-        "agents": {item["agentId"]: None for item in roster},
-    }
+def ensure_header(runtime: Path, agent_id: str) -> str:
+    existing = read_token(runtime, agent_id)
+    if existing:
+        return existing
+    return issue_header(runtime, agent_id)
 
 
-def load_state(path: Path, partition: str, roster: tuple[dict, ...]) -> dict:
-    if not path.exists():
-        return empty_state(partition, roster)
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    expected = [item["agentId"] for item in roster]
-    if raw.get("version") != STATE_VERSION or raw.get("partition") != partition:
-        raise SystemExit(f"refusing to load mismatched state file: {path}")
-    if list(raw.get("agents", {})) != expected:
-        raise SystemExit(f"refusing to load a state file for a different roster: {path}")
-    return raw
+def match_token(runtime: Path, token: str) -> Optional[str]:
+    directory = runtime / "headers"
+    if not directory.is_dir():
+        return None
+    for path in sorted(directory.glob("*.header")):
+        agent_id = path.name[: -len(".header")]
+        if not ID_RE.fullmatch(agent_id):
+            continue
+        saved = read_token(runtime, agent_id)
+        if saved and secrets.compare_digest(saved, token):
+            return agent_id
+    return None
 
 
-def save_state(path: Path, state: dict) -> None:
-    write_private(path, json.dumps(state, ensure_ascii=False, separators=(",", ":")))
+def read_register_key(runtime: Path) -> Optional[str]:
+    path = runtime / "register.key"
+    if not path.is_file():
+        return None
+    key = path.read_text(encoding="utf-8").strip()
+    if not key or not key.isascii():
+        return None
+    return key
+
+
+def ensure_register_key(runtime: Path) -> str:
+    existing = read_register_key(runtime)
+    if existing:
+        return existing
+    key = secrets.token_urlsafe(32)
+    write_private(runtime / "register.key", key + "\n")
+    return key
+
+
+def report_command(agent_id: str, runtime: Path, url: str) -> str:
+    return (
+        "python receiver/report_task.py"
+        f" --agent-id {agent_id}"
+        " --job-id <JOB>"
+        " --status started"
+        ' --task "<TITLE>"'
+        f" --runtime-dir {runtime}"
+        f" --url {url}"
+    )
+
+
+def legacy_runtime(path: Path) -> bool:
+    names = {part.casefold() for part in path.expanduser().parts}
+    return bool(names & {name.casefold() for name in LEGACY_RUNTIME_NAMES})
+
+
+def now_ms() -> int:
+    return int(time.time() * 1000)
 
 
 def _title(value: object, required: bool) -> tuple[Optional[str], Optional[str]]:
@@ -159,7 +241,19 @@ def _title(value: object, required: bool) -> tuple[Optional[str], Optional[str]]
     return value, None
 
 
-def parse_event(body: dict, bound_id: str) -> dict:
+def is_demo_body(body: object) -> bool:
+    if not isinstance(body, dict):
+        return False
+    for key in ("mode", "partition", "sourceId", "agentId", "source", "roster"):
+        value = body.get(key)
+        if isinstance(value, str) and value.lower() in {"demo", "demo-sim", "simulation"}:
+            return True
+    return False
+
+
+def parse_event(body: object, bound_id: str) -> dict:
+    if is_demo_body(body):
+        return {"ok": False, "error": "demo_rejected"}
     if not isinstance(body, dict):
         return {"ok": False, "error": "malformed"}
     if set(body) - ALLOWED_FIELDS:
@@ -178,7 +272,7 @@ def parse_event(body: dict, bound_id: str) -> dict:
     if body["sourceId"] != bound_id or body["agentId"] != bound_id:
         return {"ok": False, "error": "identity_mismatch"}
     label = body.get("label")
-    if label is not None and (not isinstance(label, str) or not LABEL_RE.fullmatch(label)):
+    if label is not None and (not isinstance(label, str) or not DISPLAY_RE.fullmatch(label)):
         return {"ok": False, "error": "malformed"}
     title, title_error = _title(body.get("taskTitle"), required=body["type"] == "task.started")
     if title_error:
@@ -198,87 +292,302 @@ def parse_event(body: dict, bound_id: str) -> dict:
     }
 
 
-def apply_event(state: dict, event: dict, server_now: int) -> dict:
-    if event["eventId"] in state["seen"]:
-        return {"ok": True, "deduped": True}
-    if event["agentId"] not in state["agents"]:
-        return {"ok": False, "error": "identity_mismatch"}
-    if event["at"] > server_now + FUTURE_SKEW_MS:
-        return {"ok": False, "error": "malformed"}
-    job = state["agents"][event["agentId"]]
-    if job is not None and event["at"] <= job["lastEventAt"]:
-        return {"ok": False, "error": "out_of_order"}
-    phase = None if job is None else job["phase"]
-    kind = event["type"]
-    if kind == "task.started":
-        if phase == "working":
-            return {"ok": False, "error": "out_of_order"}
-        if job is not None and job["jobId"] == event["jobId"] and phase in {"completed", "failed"}:
-            return {"ok": False, "error": "out_of_order"}
-        state["agents"][event["agentId"]] = {
-            "jobId": event["jobId"],
-            "phase": "working",
-            "taskTitle": event["taskTitle"],
-            "startedAt": event["at"],
-            "terminalAt": None,
-            "lastReportAt": server_now,
-            "lastEventAt": event["at"],
-            "lastEventId": event["eventId"],
-            "lastType": kind,
-            "callerLabel": event["label"],
-        }
-    elif kind == "task.progress":
-        if job is None or phase != "working" or job["jobId"] != event["jobId"]:
-            return {"ok": False, "error": "out_of_order"}
-        if event["taskTitle"]:
-            job["taskTitle"] = event["taskTitle"]
-        job["lastReportAt"] = server_now
-        job["lastEventAt"] = event["at"]
-        job["lastEventId"] = event["eventId"]
-        job["lastType"] = kind
-    else:
-        if job is None or phase != "working" or job["jobId"] != event["jobId"]:
-            return {"ok": False, "error": "out_of_order"}
-        job["phase"] = "completed" if kind == "task.completed" else "failed"
-        job["terminalAt"] = event["at"]
-        job["lastReportAt"] = server_now
-        job["lastEventAt"] = event["at"]
-        job["lastEventId"] = event["eventId"]
-        job["lastType"] = kind
-        if event["taskTitle"]:
-            job["taskTitle"] = event["taskTitle"]
-        if event["label"] is not None:
-            job["callerLabel"] = event["label"]
-    state["seen"].append(event["eventId"])
-    del state["seen"][:-MAX_SEEN]
-    state["events"].append(
-        {
-            "eventId": event["eventId"],
-            "type": kind,
-            "jobId": event["jobId"],
-            "at": event["at"],
-            "acceptedAt": server_now,
-            "sourceId": event["sourceId"],
-            "agentId": event["agentId"],
-            "taskTitle": event["taskTitle"],
-            "evidenceType": EVIDENCE_TYPE,
-        }
-    )
-    del state["events"][:-MAX_RECENT]
-    return {"ok": True, "deduped": False}
-
-
-def project_agent(state: dict, agent_id: str, name: str, now: int, ttl_ms: int) -> dict:
-    job = state["agents"].get(agent_id)
-    base = {
-        "agentId": agent_id,
-        "sourceId": agent_id if state["partition"] == "real" else FIXTURE_SOURCE if agent_id == FIXTURE_AGENT else agent_id,
-        "name": name,
-        "evidenceType": EVIDENCE_TYPE if state["partition"] == "real" else "fixture",
+def payload_hash(event: dict) -> str:
+    canonical = {
+        "agentId": event["agentId"],
+        "jobId": event["jobId"],
+        "type": event["type"],
+        "taskTitle": event.get("taskTitle"),
+        "label": event.get("label"),
     }
-    if state["partition"] == "fixture":
-        base["sourceId"] = FIXTURE_SOURCE
-    if job is None:
+    raw = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def decide(state: Optional[dict], event: dict) -> dict:
+    kind = event["type"]
+    phase = None if state is None else state["phase"]
+    job = None if state is None else state["job_id"]
+    last_at = None if state is None else state["last_event_at"]
+    if phase is None:
+        if kind not in {"task.started", "task.idle"}:
+            return {"ok": False, "error": "out_of_order"}
+        return {"ok": True}
+    if event["at"] <= last_at:
+        return {"ok": False, "error": "out_of_order"}
+    same_job = event["jobId"] == job
+    if not same_job and kind != "task.started":
+        return {"ok": False, "error": "stale_job"}
+    if kind == "task.started":
+        if same_job and phase in {"working", "completed", "failed"}:
+            return {"ok": False, "error": "out_of_order"}
+        return {"ok": True}
+    if kind == "task.progress":
+        if not same_job or phase != "working":
+            return {"ok": False, "error": "out_of_order"}
+        return {"ok": True}
+    if kind in {"task.waiting", "task.blocked"}:
+        if not same_job or phase not in OPEN_PHASES:
+            return {"ok": False, "error": "out_of_order"}
+        return {"ok": True}
+    if kind in {"task.completed", "task.failed"}:
+        if not same_job or phase not in OPEN_PHASES:
+            return {"ok": False, "error": "out_of_order"}
+        return {"ok": True}
+    if kind == "task.idle":
+        return {"ok": True}
+    return {"ok": False, "error": "malformed"}
+
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agents (
+  agent_id TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL,
+  seat INTEGER NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS events (
+  event_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  task_title TEXT,
+  caller_label TEXT,
+  payload_hash TEXT NOT NULL,
+  accepted_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_state (
+  agent_id TEXT PRIMARY KEY,
+  job_id TEXT,
+  phase TEXT,
+  task_title TEXT,
+  started_at INTEGER,
+  terminal_at INTEGER,
+  last_report_at INTEGER,
+  last_event_at INTEGER,
+  last_event_id TEXT,
+  last_type TEXT,
+  caller_label TEXT
+);
+"""
+
+
+class OfficeStore:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.connect() as db:
+            db.executescript(SCHEMA)
+            row = db.execute("SELECT value FROM meta WHERE key = 'receiver_id'").fetchone()
+            if row is None:
+                db.execute(
+                    "INSERT INTO meta (key, value) VALUES ('receiver_id', ?)",
+                    (str(uuid.uuid4()),),
+                )
+
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        connection = sqlite3.connect(self.path, timeout=5, isolation_level=None)
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA busy_timeout=5000")
+            yield connection
+        finally:
+            connection.close()
+
+    def receiver_id(self) -> str:
+        with self.connect() as db:
+            row = db.execute("SELECT value FROM meta WHERE key = 'receiver_id'").fetchone()
+        return str(row["value"])
+
+    def get_agent(self, agent_id: str) -> Optional[dict]:
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
+            return dict(row) if row is not None else None
+
+    def insert_agent(self, agent_id: str, display_name: str, now: int) -> int:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                used = {row["seat"] for row in db.execute("SELECT seat FROM agents")}
+                seat = 0
+                while seat in used:
+                    seat += 1
+                db.execute(
+                    "INSERT INTO agents (agent_id, display_name, seat, created_at) VALUES (?, ?, ?, ?)",
+                    (agent_id, display_name, seat, now),
+                )
+                db.execute("COMMIT")
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+            return seat
+
+    def accept(self, bound_id: str, body: object, now: int) -> tuple[int, dict]:
+        if is_demo_body(body):
+            return 403, {"ok": False, "error": "demo_rejected"}
+        parsed = parse_event(body, bound_id)
+        if not parsed["ok"]:
+            code = 403 if parsed["error"] in {"identity_mismatch", "demo_rejected"} else 400
+            return code, {"ok": False, "error": parsed["error"]}
+        event = parsed["event"]
+        if event["at"] > now + FUTURE_SKEW_MS:
+            return 400, {"ok": False, "error": "malformed"}
+        digest = payload_hash(event)
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                agent = db.execute("SELECT agent_id FROM agents WHERE agent_id = ?", (bound_id,)).fetchone()
+                if agent is None:
+                    db.execute("ROLLBACK")
+                    return 403, {"ok": False, "error": "unknown_agent"}
+                existing = db.execute(
+                    "SELECT payload_hash FROM events WHERE event_id = ?",
+                    (event["eventId"],),
+                ).fetchone()
+                if existing is not None:
+                    db.execute("ROLLBACK")
+                    if existing["payload_hash"] == digest:
+                        return 200, {"ok": True, "deduped": True}
+                    return 409, {"ok": False, "error": "event_id_conflict"}
+                state_row = db.execute("SELECT * FROM agent_state WHERE agent_id = ?", (bound_id,)).fetchone()
+                state = dict(state_row) if state_row is not None else None
+                decision = decide(state, event)
+                if not decision["ok"]:
+                    db.execute("ROLLBACK")
+                    return 409, decision
+                self._write_event(db, state, event, digest, now)
+                db.execute("COMMIT")
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+        return 200, {"ok": True, "deduped": False}
+
+    def _write_event(self, db: sqlite3.Connection, state: Optional[dict], event: dict, digest: str, now: int) -> None:
+        kind = event["type"]
+        phase = PHASE_BY_TYPE[kind]
+        previous_title = None if state is None else state["task_title"]
+        title = event["taskTitle"] if event["taskTitle"] else previous_title
+        label = event["label"] if event["label"] is not None else (None if state is None else state["caller_label"])
+        if state is None or state["phase"] is None or (kind == "task.started" and event["jobId"] != state["job_id"]):
+            started = event["at"] if kind == "task.started" else None
+        else:
+            started = state["started_at"]
+        if kind in {"task.completed", "task.failed"}:
+            terminal = event["at"]
+        elif state is not None and event["jobId"] == state["job_id"]:
+            terminal = state["terminal_at"]
+        else:
+            terminal = None
+        if kind == "task.started":
+            terminal = None
+            started = event["at"]
+        db.execute(
+            """
+            INSERT INTO events (event_id, agent_id, job_id, type, at, task_title, caller_label, payload_hash, accepted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (event["eventId"], event["agentId"], event["jobId"], kind, event["at"], event["taskTitle"], event["label"], digest, now),
+        )
+        db.execute(
+            """
+            INSERT INTO agent_state (
+              agent_id, job_id, phase, task_title, started_at, terminal_at, last_report_at, last_event_at,
+              last_event_id, last_type, caller_label
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(agent_id) DO UPDATE SET
+              job_id = excluded.job_id,
+              phase = excluded.phase,
+              task_title = excluded.task_title,
+              started_at = excluded.started_at,
+              terminal_at = excluded.terminal_at,
+              last_report_at = excluded.last_report_at,
+              last_event_at = excluded.last_event_at,
+              last_event_id = excluded.last_event_id,
+              last_type = excluded.last_type,
+              caller_label = excluded.caller_label
+            """,
+            (
+                event["agentId"],
+                event["jobId"],
+                phase,
+                title,
+                started,
+                terminal,
+                now,
+                event["at"],
+                event["eventId"],
+                kind,
+                label,
+            ),
+        )
+
+    def project(self, now: int, ttl_ms: int, receiver_id: Optional[str] = None) -> dict:
+        with self.connect() as db:
+            rows = [
+                dict(row)
+                for row in db.execute(
+                    """
+                    SELECT a.agent_id, a.display_name, a.seat, s.job_id, s.phase, s.task_title, s.started_at,
+                           s.terminal_at, s.last_report_at, s.last_event_at, s.last_event_id, s.last_type, s.caller_label
+                    FROM agents a
+                    LEFT JOIN agent_state s ON s.agent_id = a.agent_id
+                    ORDER BY a.seat ASC, a.agent_id ASC
+                    """
+                )
+            ]
+            recent_rows = [
+                dict(row)
+                for row in db.execute(
+                    """
+                    SELECT event_id, type, agent_id, job_id, task_title, at, accepted_at
+                    FROM events ORDER BY accepted_at ASC, rowid ASC
+                    """
+                )
+            ]
+        agents = [project_agent(row, now, ttl_ms) for row in rows]
+        recent = [
+            {
+                "eventId": row["event_id"],
+                "type": row["type"],
+                "agentId": row["agent_id"],
+                "jobId": row["job_id"],
+                "taskTitle": row["task_title"],
+                "at": row["at"],
+                "acceptedAt": row["accepted_at"],
+            }
+            for row in recent_rows[-MAX_RECENT:]
+        ]
+        payload = {
+            "ok": True,
+            "version": VERSION,
+            "partition": "real",
+            "evidenceType": EVIDENCE_TYPE,
+            "ttlMs": ttl_ms,
+            "serverNow": now,
+            "agents": agents,
+            "recent": recent,
+        }
+        if receiver_id:
+            payload["receiverId"] = receiver_id
+        return payload
+
+
+def project_agent(row: dict, now: int, ttl_ms: int) -> dict:
+    base = {
+        "agentId": row["agent_id"],
+        "sourceId": row["agent_id"],
+        "name": row["display_name"],
+        "seat": row["seat"],
+        "evidenceType": EVIDENCE_TYPE,
+    }
+    if row["phase"] is None or row["last_report_at"] is None:
         base.update(
             {
                 "effectiveStatus": "unknown",
@@ -295,160 +604,106 @@ def project_agent(state: dict, agent_id: str, name: str, now: int, ttl_ms: int) 
             }
         )
         return base
-    stale = now - job["lastReportAt"] > ttl_ms
+    # Terminal phases expire too. lastKnownStatus keeps completed or failed.
+    stale = now - row["last_report_at"] > ttl_ms
     base.update(
         {
-            "effectiveStatus": "unknown" if stale else job["phase"],
-            "lastKnownStatus": job["phase"],
+            "effectiveStatus": "unknown" if stale else row["phase"],
+            "lastKnownStatus": row["phase"],
             "freshness": "stale" if stale else "fresh",
             "reason": "ttl" if stale else "report",
-            "jobId": job["jobId"],
-            "taskTitle": job["taskTitle"],
-            "startedAt": job["startedAt"],
-            "terminalAt": job["terminalAt"],
-            "lastReportAt": job["lastReportAt"],
-            "callerLabel": job["callerLabel"],
+            "jobId": row["job_id"],
+            "taskTitle": row["task_title"],
+            "startedAt": row["started_at"],
+            "terminalAt": row["terminal_at"],
+            "lastReportAt": row["last_report_at"],
+            "callerLabel": row["caller_label"],
             "provenance": {
-                "sourceId": base["sourceId"],
-                "agentId": agent_id,
-                "eventId": job["lastEventId"],
-                "type": job["lastType"],
-                "at": job["lastEventAt"],
-                "evidenceType": base["evidenceType"],
+                "sourceId": row["agent_id"],
+                "agentId": row["agent_id"],
+                "eventId": row["last_event_id"],
+                "type": row["last_type"],
+                "at": row["last_event_at"],
+                "evidenceType": EVIDENCE_TYPE,
             },
         }
     )
     return base
 
 
-def project(state: dict, roster: tuple[dict, ...], now: int, ttl_ms: int) -> dict:
-    agents = [project_agent(state, item["agentId"], item["name"], now, ttl_ms) for item in roster]
-    primary = dict(agents[0])
-    recent = [dict(item) for item in state["events"][-20:]]
+def register_agent(runtime: Path, agent_id: str, display_name: str, *, rotate: bool = False, now: Optional[int] = None, url: str = "") -> dict:
+    if not ID_RE.fullmatch(agent_id) or not isinstance(display_name, str) or not DISPLAY_RE.fullmatch(display_name):
+        return {"ok": False, "error": "malformed"}
+    if is_demo_body({"agentId": agent_id, "sourceId": agent_id}):
+        return {"ok": False, "error": "demo_rejected"}
+    runtime.mkdir(parents=True, exist_ok=True)
+    restrict(runtime)
+    store = OfficeStore(runtime / "office.sqlite3")
+    stamp = now_ms() if now is None else now
+    existing = store.get_agent(agent_id)
+    public_url = url or f"http://127.0.0.1:{OFFICE_PORT}/api/self-report"
+    header = header_file(runtime, agent_id)
+    if existing is not None and not rotate:
+        return {
+            "ok": False,
+            "error": "identity_exists",
+            "agentId": agent_id,
+            "displayName": existing["display_name"],
+            "seat": existing["seat"],
+            "headerFile": str(header),
+        }
+    if existing is not None and display_name != existing["display_name"]:
+        return {"ok": False, "error": "identity_conflict", "agentId": agent_id, "displayName": existing["display_name"]}
+    if existing is None:
+        seat = store.insert_agent(agent_id, display_name, stamp)
+        rotated = False
+    else:
+        seat = int(existing["seat"])
+        rotated = True
+    issue_header(runtime, agent_id)
     return {
-        "partition": state["partition"],
-        "evidenceType": EVIDENCE_TYPE if state["partition"] == "real" else "fixture",
-        "ttlMs": ttl_ms,
-        "serverNow": now,
-        "agents": agents,
-        "recent": recent,
-        "sourceId": primary["sourceId"],
-        "agentId": primary["agentId"],
-        "effectiveStatus": primary["effectiveStatus"],
-        "lastKnownStatus": primary["lastKnownStatus"],
-        "freshness": primary["freshness"],
-        "reason": primary["reason"],
-        "jobId": primary["jobId"],
-        "taskTitle": primary["taskTitle"],
-        "startedAt": primary["startedAt"],
-        "terminalAt": primary["terminalAt"],
-        "lastReportAt": primary["lastReportAt"],
-        "callerLabel": primary["callerLabel"],
-        "provenance": primary["provenance"],
+        "ok": True,
+        "rotated": rotated,
+        "agentId": agent_id,
+        "displayName": display_name,
+        "seat": seat,
+        "headerFile": str(header),
+        "runtimeDir": str(runtime),
+        "reportCommand": report_command(agent_id, runtime, public_url),
     }
 
 
 class App:
-    def __init__(
-        self, runtime: Path, ttl_ms: int, enable_fixtures: bool, static_dir: Optional[Path], *, roster: str = "bot"
-    ) -> None:
+    def __init__(self, runtime: Path, ttl_ms: int, enable_fixtures: bool = False, static_dir: Optional[Path] = None) -> None:
+        del enable_fixtures  # v0.2 has no demo/fixture partition.
         self.runtime = runtime
         self.ttl_ms = ttl_ms
         self.static_dir = static_dir
-        self.lock = threading.Lock()
-        self.roster_name = roster
-        self.roster = ROSTERS[roster]
-        self.real_state_path = runtime / "state.json"
-        self.real_state = load_state(self.real_state_path, "real", self.roster)
-        self.fixture_token = None
-        self.fixture_state = None
-        self.fixture_state_path = None
-        self.fixture_roster = ({"agentId": FIXTURE_AGENT, "name": FIXTURE_NAME},)
-        if enable_fixtures:
-            self.fixture_state_path = runtime / "fixture-state.json"
-            self.fixture_state = load_state(self.fixture_state_path, "fixture", self.fixture_roster)
-        foreign_roster = CODEX if roster == "bot" else TRUSTED
-        if any(header_file(runtime, item["agentId"]).exists() for item in foreign_roster):
-            raise SystemExit(f"refusing to use a runtime directory for a different roster: {runtime}")
         runtime.mkdir(parents=True, exist_ok=True)
-        # Claim a fresh runtime before issuing credentials, even if no reports are saved yet.
-        marker = runtime / "roster"
-        try:
-            with marker.open("x", encoding="ascii") as stream:
-                stream.write(roster)
-        except FileExistsError:
-            try:
-                saved_roster = marker.read_text(encoding="ascii")
-            except PermissionError:
-                if os.name != "nt":
-                    raise
-                # Older receivers could leave this marker without an inherited Windows ACL.
-                restrict(marker)
-                saved_roster = marker.read_text(encoding="ascii")
-            if saved_roster != roster:
-                raise SystemExit(f"refusing to use a runtime directory for a different roster: {runtime}")
-        else:
-            restrict(marker)
         restrict(runtime)
-        self.activity = None
-        self.activity_token = None
-        if roster == "codex":
-            if __package__:
-                from .codex_activity import ActivityStore
-            else:
-                from codex_activity import ActivityStore
+        self.store = OfficeStore(runtime / "office.sqlite3")
+        restrict(self.store.path)
+        self.register_key = ensure_register_key(runtime)
+        if __package__:
+            from .codex_activity import ActivityStore
+        else:
+            from codex_activity import ActivityStore
 
-            activity_path = runtime / "codex-activity.sqlite3"
-            self.activity = ActivityStore(activity_path)
-            restrict(activity_path)
-            self.activity_token = issue_header(runtime, CODEX_HOOK_SOURCE)
-        self.tokens = {item["agentId"]: issue_header(runtime, item["agentId"]) for item in self.roster}
-        if enable_fixtures:
-            self.fixture_token = issue_header(runtime, FIXTURE_AGENT)
+        activity_path = runtime / "codex-activity.sqlite3"
+        self.activity = ActivityStore(activity_path)
+        restrict(activity_path)
+        self.activity_token = ensure_header(runtime, CODEX_HOOK_SOURCE)
 
-    def classify(self, token: str) -> Optional[tuple[str, str]]:
-        for agent_id, saved in self.tokens.items():
-            if secrets.compare_digest(token, saved):
-                return ("real", agent_id)
-        if self.fixture_token and secrets.compare_digest(token, self.fixture_token):
-            return ("fixture", FIXTURE_AGENT)
-        return None
+    def classify(self, token: str) -> Optional[str]:
+        return match_token(self.runtime, token)
 
-    def snapshot(self, partition: str) -> dict:
-        with self.lock:
-            if partition == "fixture":
-                if self.fixture_state is None:
-                    return {"ok": False, "error": "fixtures_disabled"}
-                return project(self.fixture_state, self.fixture_roster, now_ms(), self.ttl_ms)
-            snapshot = project(self.real_state, self.roster, now_ms(), self.ttl_ms)
-            if self.roster_name == "codex":
-                snapshot["roster"] = self.roster_name
-            return snapshot
+    def snapshot(self) -> dict:
+        return self.store.project(now_ms(), self.ttl_ms, self.store.receiver_id())
 
-    def accept(self, partition: str, kind: str, bound_id: str, body: dict) -> tuple[int, dict]:
-        if kind != partition:
-            return 403, {"ok": False, "error": "wrong_partition"}
-        if partition == "fixture" and self.fixture_state is None:
-            return 404, {"ok": False, "error": "fixtures_disabled"}
-        parsed = parse_event(body, bound_id)
-        if not parsed["ok"]:
-            code = 403 if parsed["error"] == "identity_mismatch" else 400
-            return code, parsed
-        with self.lock:
-            state = self.real_state if partition == "real" else self.fixture_state
-            before = json.dumps(state, ensure_ascii=False, sort_keys=True)
-            result = apply_event(state, parsed["event"], now_ms())
-            if result["ok"] and not result["deduped"]:
-                path = self.real_state_path if partition == "real" else self.fixture_state_path
-                save_state(path, state)
-            elif json.dumps(state, ensure_ascii=False, sort_keys=True) != before and not result["ok"]:
-                raise RuntimeError("rejected event mutated state")
-        status = 200 if result["ok"] else 409 if result["error"] == "out_of_order" else 400
-        return status, result
-
-
-def now_ms() -> int:
-    return int(time.time() * 1000)
+    def accept_report(self, bound_id: str, body: object) -> tuple[int, dict]:
+        if bound_id == CODEX_HOOK_SOURCE:
+            return 403, {"ok": False, "error": "identity_mismatch"}
+        return self.store.accept(bound_id, body, now_ms())
 
 
 def make_handler(app: App):
@@ -456,7 +711,11 @@ def make_handler(app: App):
         protocol_version = "HTTP/1.1"
 
         def log_message(self, fmt: str, *args) -> None:
-            sys.stderr.write("multi-report %s\n" % (fmt % args))
+            try:
+                line = fmt % args
+            except Exception:
+                line = " ".join(str(arg) for arg in args)
+            sys.stderr.write("office %s\n" % redact(line))
 
         def _send(self, status: int, payload: Optional[dict] = None, body: bytes = b"", content_type: str = "application/json; charset=utf-8") -> None:
             data = body if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -469,61 +728,59 @@ def make_handler(app: App):
             self.end_headers()
             self.wfile.write(data)
 
-        def _partition(self, path: str) -> Optional[str]:
-            if path == "/api/self-report":
-                return "real"
-            if path == "/api/fixture-report":
-                return "fixture"
-            return None
+        def _bearer(self) -> Optional[str]:
+            header = self.headers.get("Authorization", "")
+            if not header.startswith("Bearer ") or header == "Bearer ":
+                return None
+            token = header[7:].strip()
+            if not token or not token.isascii():
+                return None
+            return token
 
         def do_GET(self) -> None:  # noqa: N802
-            path = self.path.split("?", 1)[0]
+            path = urlparse(self.path).path
             if path == "/health":
-                service = CODEX_RUNTIME_NAME if app.roster_name == "codex" else RUNTIME_NAME
-                payload = {"ok": True, "service": service, "evidenceType": EVIDENCE_TYPE}
-                if app.activity is not None:
-                    payload["codexActivity"] = True
-                self._send(200, payload)
+                self._send(
+                    200,
+                    {
+                        "ok": True,
+                        "version": VERSION,
+                        "service": SERVICE_NAME,
+                        "receiverId": app.store.receiver_id(),
+                        "evidenceType": EVIDENCE_TYPE,
+                        "codexActivity": True,
+                        "getAuth": "loopback-only",
+                        "bind": "127.0.0.1",
+                    },
+                )
+                return
+            if path in {"/api/state", "/api/self-report"}:
+                self._send(200, app.snapshot())
+                return
+            if path == "/api/state/stream":
+                payload = json.dumps(app.snapshot(), ensure_ascii=False)
+                self._send(200, body=f"data: {payload}\n\n".encode("utf-8"), content_type="text/event-stream; charset=utf-8")
                 return
             if path == CODEX_ACTIVITY_PATH:
-                if app.activity is None:
-                    self._send(404, {"ok": False, "error": "not_found"})
-                else:
-                    self._send(200, app.activity.snapshot())
+                self._send(200, app.activity.snapshot())
                 return
-            partition = self._partition(path)
-            if partition:
-                if partition == "fixture" and app.fixture_state is None:
-                    self._send(404, {"ok": False, "error": "fixtures_disabled"})
-                    return
-                self._send(200, app.snapshot(partition))
+            if path == "/api/fixture-report":
+                self._send(404, {"ok": False, "error": "fixtures_disabled"})
                 return
             self._static(path)
 
         def do_POST(self) -> None:  # noqa: N802
-            path = self.path.split("?", 1)[0]
-            partition = self._partition(path)
-            activity = app.activity if path == CODEX_ACTIVITY_PATH else None
-            if partition is None and activity is None:
+            path = urlparse(self.path).path
+            if path == "/api/fixture-report":
+                self._send(404, {"ok": False, "error": "fixtures_disabled"})
+                return
+            if path not in {"/api/self-report", "/api/agents/register", CODEX_ACTIVITY_PATH}:
                 self._send(404, {"ok": False, "error": "not_found"})
                 return
-            header = self.headers.get("Authorization", "")
-            if not header.startswith("Bearer ") or header == "Bearer ":
+            token = self._bearer()
+            if token is None:
                 self._send(401, {"ok": False, "error": "unauthorized"})
                 return
-            token = header[7:].strip()
-            if not token.isascii():
-                self._send(401, {"ok": False, "error": "unauthorized"})
-                return
-            if activity is not None:
-                if not secrets.compare_digest(token, app.activity_token):
-                    self._send(401, {"ok": False, "error": "unauthorized"})
-                    return
-            else:
-                found = app.classify(token)
-                if found is None:
-                    self._send(401, {"ok": False, "error": "unauthorized"})
-                    return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
@@ -538,11 +795,30 @@ def make_handler(app: App):
             except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
                 self._send(400, {"ok": False, "error": "malformed"})
                 return
-            if activity is not None:
-                status, payload = activity.accept(body, now_ms())
-            else:
-                kind, bound_id = found
-                status, payload = app.accept(partition, kind, bound_id, body)
+            if path == "/api/agents/register":
+                if not secrets.compare_digest(token, app.register_key):
+                    self._send(401, {"ok": False, "error": "unauthorized"})
+                    return
+                status, payload = register_http(app, body)
+                self._send(status, payload)
+                return
+            if path == CODEX_ACTIVITY_PATH:
+                if not secrets.compare_digest(token, app.activity_token):
+                    self._send(401, {"ok": False, "error": "unauthorized"})
+                    return
+                if is_demo_body(body):
+                    self._send(403, {"ok": False, "error": "demo_rejected"})
+                    return
+                status, payload = app.activity.accept(body, now_ms())
+                if status == 200 and isinstance(body, dict) and body.get("jobId") and body.get("kind") in {"started", "completed", "failed"}:
+                    mirror_activity(app, body)
+                self._send(status, payload)
+                return
+            found = app.classify(token)
+            if found is None:
+                self._send(401, {"ok": False, "error": "unauthorized"})
+                return
+            status, payload = app.accept_report(found, body)
             self._send(status, payload)
 
         def do_OPTIONS(self) -> None:  # noqa: N802
@@ -564,28 +840,74 @@ def make_handler(app: App):
                 self._send(404, {"ok": False, "error": "not_found"})
                 return
             data = candidate.read_bytes()
-            kind = "text/html; charset=utf-8"
-            if candidate.suffix == ".js":
+            kind = "application/octet-stream"
+            if candidate.suffix == ".html":
+                kind = "text/html; charset=utf-8"
+            elif candidate.suffix == ".js":
                 kind = "text/javascript; charset=utf-8"
             elif candidate.suffix == ".css":
                 kind = "text/css; charset=utf-8"
             elif candidate.suffix == ".svg":
                 kind = "image/svg+xml"
+            elif candidate.suffix == ".ttf":
+                kind = "font/ttf"
+            elif candidate.suffix == ".woff2":
+                kind = "font/woff2"
             self._send(200, body=data, content_type=kind)
 
     return Handler
 
 
-def serve(app: App | Callable[[], App], host: str, port: int) -> ThreadingHTTPServer:
+def register_http(app: App, body: object) -> tuple[int, dict]:
+    if not isinstance(body, dict):
+        return 400, {"ok": False, "error": "malformed"}
+    allowed = {"agentId", "displayName", "rotate"}
+    if set(body) - allowed or "agentId" not in body or "displayName" not in body:
+        return 400, {"ok": False, "error": "malformed"}
+    rotate = body.get("rotate", False)
+    if not isinstance(rotate, bool):
+        return 400, {"ok": False, "error": "malformed"}
+    result = register_agent(app.runtime, str(body["agentId"]), str(body["displayName"]) if isinstance(body["displayName"], str) else "", rotate=rotate)
+    if result.get("ok"):
+        public = {key: result[key] for key in ("ok", "rotated", "agentId", "displayName", "seat", "headerFile", "reportCommand")}
+        return 200, public
+    code = 409 if result.get("error") in {"identity_exists", "identity_conflict"} else 400
+    if result.get("error") == "demo_rejected":
+        code = 403
+    return code, {"ok": False, "error": result.get("error")}
+
+
+def mirror_activity(app: App, body: dict) -> None:
+    agent_id = body.get("agentId")
+    if not isinstance(agent_id, str) or app.store.get_agent(agent_id) is None:
+        return
+    kind = {"started": "task.started", "completed": "task.completed", "failed": "task.failed"}[body["kind"]]
+    mapped = {
+        "eventId": body.get("eventId"),
+        "type": kind,
+        "jobId": body.get("jobId"),
+        "at": now_ms(),
+        "sourceId": agent_id,
+        "agentId": agent_id,
+    }
+    if body.get("taskTitle"):
+        mapped["taskTitle"] = body["taskTitle"]
+    app.store.accept(agent_id, mapped, now_ms())
+
+
+def serve(app: App, host: str, port: int) -> ThreadingHTTPServer:
+    if host != "127.0.0.1":
+        raise OSError("refusing non-loopback bind")
     httpd = ThreadingHTTPServer((host, port), BaseHTTPRequestHandler, bind_and_activate=False)
     try:
+        httpd.allow_reuse_address = False
         if os.name == "nt":
-            # On Windows SO_REUSEADDR can permit a second server to bind a live port.
-            httpd.allow_reuse_address = False
+            import socket
+
             httpd.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         httpd.server_bind()
         httpd.server_activate()
-        httpd.RequestHandlerClass = make_handler(app() if callable(app) else app)
+        httpd.RequestHandlerClass = make_handler(app)
     except BaseException:
         httpd.server_close()
         raise
@@ -593,10 +915,9 @@ def serve(app: App | Callable[[], App], host: str, port: int) -> ThreadingHTTPSe
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Agent Office multi-source self-report receiver")
+    parser = argparse.ArgumentParser(description="Agent Office v0.2 receiver")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int)
-    parser.add_argument("--roster", choices=ROSTERS, default="bot")
+    parser.add_argument("--port", type=int, default=OFFICE_PORT)
     parser.add_argument("--runtime-dir", default="")
     parser.add_argument("--static-dir", default="")
     parser.add_argument("--ttl-ms", type=int, default=DEFAULT_TTL_MS)
@@ -606,43 +927,71 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
-    codex = args.roster == "codex"
-    default_port = CODEX_PORT if codex else BOT_PORT
-    port = args.port if args.port is not None else default_port
-    if port == LEGACY_PORT:
-        print(f"refusing port 8792; leave the existing receiver running and use {default_port}", file=sys.stderr)
+    if args.host != "127.0.0.1":
+        print("refusing bind host. Agent Office listens on 127.0.0.1 only.", file=sys.stderr)
         return 2
-    if codex and port == BOT_PORT:
-        print(f"refusing port {port}; it belongs to the other roster", file=sys.stderr)
+    if args.port in RETIRED_PORTS:
+        print(
+            f"port {args.port} is retired. v0.1 listeners 8792, 8793 and 8794 are not served. Use {OFFICE_PORT}.",
+            file=sys.stderr,
+        )
+        return 2
+    if args.port <= 0 or args.port > 65535:
+        print("port is not usable", file=sys.stderr)
         return 2
     if args.ttl_ms <= 0:
         print("ttl-ms must be positive", file=sys.stderr)
         return 2
-    runtime = Path(args.runtime_dir).expanduser() if args.runtime_dir else default_runtime_dir(args.roster)
-    runtime_parts = {part.casefold() for part in (*runtime.absolute().parts, *runtime.resolve().parts)}
-    foreign_runtime = RUNTIME_NAME if codex else CODEX_RUNTIME_NAME
-    if LEGACY_RUNTIME_NAME in runtime_parts or foreign_runtime in runtime_parts:
-        print("refusing a runtime directory reserved for another receiver", file=sys.stderr)
+    runtime = Path(args.runtime_dir).expanduser() if args.runtime_dir else default_runtime_dir()
+    if legacy_runtime(runtime):
+        print("refusing a runtime directory reserved for a v0.1 receiver", file=sys.stderr)
         return 2
     static_dir = Path(args.static_dir).expanduser() if args.static_dir else None
-    if args.host not in {"127.0.0.1", "::1", "localhost"}:
-        print("warning: bind is not loopback. GET has no auth. Do not open a firewall.", file=sys.stderr)
     try:
-        with serve(lambda: App(runtime, args.ttl_ms, args.enable_fixtures, static_dir, roster=args.roster), args.host, port) as httpd:
-            bound_host, bound_port = httpd.server_address[:2]
-            print(f"bind={bound_host}:{bound_port}")
-            print(f"runtime_dir={runtime}")
-            print(f"header_dir={runtime / 'headers'}")
-            print("agents=" + ",".join(item["agentId"] for item in ROSTERS[args.roster]))
-            print(f"ttl_ms={args.ttl_ms}")
-            print(f"evidence={EVIDENCE_TYPE}")
-            print("token_not_printed=yes")
-            httpd.serve_forever()
+        # Bind before creating the runtime so a busy port does not touch a new directory.
+        httpd = ThreadingHTTPServer((args.host, args.port), BaseHTTPRequestHandler, bind_and_activate=False)
+        httpd.allow_reuse_address = False
+        if os.name == "nt":
+            import socket
+
+            httpd.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        httpd.server_bind()
+        httpd.server_activate()
+    except OSError as error:
+        errno = getattr(error, "errno", None)
+        if errno in {98, 48, 10048}:
+            print(f"port {args.port} is already in use. Refusing to switch ports.", file=sys.stderr)
+        else:
+            print(redact(f"receiver startup failed: {error}"), file=sys.stderr)
+        return 2
+    try:
+        app = App(runtime, args.ttl_ms, args.enable_fixtures, static_dir)
+        httpd.RequestHandlerClass = make_handler(app)
+    except Exception as error:
+        httpd.server_close()
+        print(redact(f"receiver startup failed: {error}"), file=sys.stderr)
+        return 2
+    print(f"bind=127.0.0.1:{args.port}")
+    print(f"ui=http://127.0.0.1:{args.port}/")
+    print(f"runtime_dir={runtime}")
+    print(f"header_dir={runtime / 'headers'}")
+    print(f"register_key_file={runtime / 'register.key'}")
+    print(f"ttl_ms={args.ttl_ms}")
+    print(f"version={VERSION}")
+    print(f"evidence={EVIDENCE_TYPE}")
+    print("get_auth=loopback-only-no-token")
+    print("token_not_printed=yes")
+    print(
+        "warning: GET /api/state and /api/self-report have no bearer token. "
+        "This is only safe because the listener is 127.0.0.1 and write auth ignores Origin.",
+        file=sys.stderr,
+    )
+    try:
+        httpd.serve_forever()
     except KeyboardInterrupt:
         return 0
-    except OSError as error:
-        print(f"receiver startup failed: {error}", file=sys.stderr)
-        return 2
+    finally:
+        httpd.server_close()
     return 0
 
 

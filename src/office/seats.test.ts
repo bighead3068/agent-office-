@@ -61,8 +61,8 @@ describe('assignSeats', () => {
       makeAgent({ id: 'f', status: 'working' }),
     ]
     const rotated = assignSeats(people, owners, true)
-    expect(rotated.nextOwners).toEqual({ ...owners, S2: 'f' })
-    expect(rotated.overflow.map((person) => person.id)).toEqual(['b'])
+    expect(rotated.nextOwners).toEqual(owners)
+    expect(rotated.overflow.map((person) => person.id)).toEqual(['f'])
   })
 
   it('keeps a displaced away owner out of a later vacancy until that agent returns', () => {
@@ -70,8 +70,8 @@ describe('assignSeats', () => {
     const people = ['b', 'c', 'd', 'e', 'f'].map((id) => makeAgent({ id }))
     const prior = assignSeats(people, emptyOwners(), true)
     const after = assignSeats([away, ...people.slice(1)], prior.nextOwners, true)
-    expect(after.seats.S1).toBeNull()
-    expect(after.overflow.map((person) => person.id)).toEqual(['a'])
+    expect(after.seats.S1?.id).toBe('a')
+    expect(after.overflow).toEqual([])
     const returned = assignSeats([{ ...away, deskPresence: undefined }, ...people.slice(1)], after.nextOwners, true)
     expect(returned.seats.S1?.id).toBe('a')
   })
@@ -89,8 +89,8 @@ describe('assignSeats', () => {
       makeAgent({ id: 'h', status: 'working' }),
     ]
     const rotated = assignSeats(people, owners, true)
-    expect(rotated.nextOwners).toEqual({ ...owners, S1: 'g', S2: 'f' })
-    expect(rotated.overflow.map((person) => person.id)).toEqual(['a', 'b', 'h'])
+    expect(rotated.nextOwners).toEqual(owners)
+    expect(rotated.overflow.map((person) => person.id)).toEqual(['f', 'g', 'h'])
   })
 
   it('seats a newly observed completion when there is a vacancy', () => {
@@ -110,9 +110,10 @@ describe('assignSeats', () => {
       makeAgent({ id: 'f', status: 'completed', lastUpdatedAt: '2026-11-07T02:00:00Z' }),
     ]
     const rotated = assignSeats(people, owners, true)
-    expect(rotated.nextOwners).toEqual({ ...owners, S1: 'f' })
+    expect(rotated.nextOwners).toEqual(owners)
+    expect(rotated.overflow.map((person) => person.id)).toEqual(['f'])
     const next = assignSeats(people, rotated.nextOwners, true)
-    expect(next.nextOwners).toEqual(rotated.nextOwners)
+    expect(next.nextOwners).toEqual(owners)
   })
 })
 
